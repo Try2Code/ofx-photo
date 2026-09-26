@@ -69,9 +69,16 @@ xdg-mime default ofx-photo.desktop image/x-nikon-nef
 ## The plugin is not included
 
 **No plugin binaries are in this repository, by design.** They belong to their vendor, and
-their resources exceed GitHub's file size limit. Obtain the plugin separately, install it,
-and the tools will find it in `/usr/OFX/Plugins`, `~/OFX/Plugins`, anywhere on
-`$OFX_PLUGIN_PATH`, or beside this checkout. Otherwise point at it:
+their resources exceed GitHub's file size limit. Obtain the plugin separately and install it. The
+tools search, in order:
+
+1. every entry of **`$OFX_PLUGIN_PATH`** — set this and it always wins
+2. `/usr/OFX/Plugins`, `/usr/local/OFX/Plugins`, `/opt/OFX/Plugins`
+3. `~/OFX/Plugins`, `~/.OFX/Plugins`, `~/.local/share/OFX/Plugins`, `~/local/OFX`, `~/.local/OFX`
+4. beside this checkout, which is where an unpacked download sits
+
+Each is tried directly and with a `Plugins/` subdirectory. Check which one won with
+`./spektra --info any.jpg` or simply override it:
 
 ```sh
 ./spektra photo.jpg out.jpg --bundle /usr/OFX/Plugins/spektrafilm.ofx.bundle
@@ -295,7 +302,7 @@ twice.
 ./tests/test_spektra.py --quick -k session              # narrow it down
 ```
 
-86 checks across the host, presets, determinism, parameter overrides, sessions, output
+87 checks across the host, presets, determinism, parameter overrides, sessions, output
 encoding, chained passes, exposure bias, image I/O, raw scaling, ICC handling and the GUI
 model. **The GUI runs offscreen**, so the whole suite needs no display and no clicking.
 

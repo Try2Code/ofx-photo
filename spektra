@@ -66,10 +66,33 @@ BUNDLE_ALIASES = {
 
 
 def bundle_roots() -> list[Path]:
-    roots = [Path("/usr/OFX/Plugins"), Path.home() / "OFX" / "Plugins"]
+    """Where to look for .ofx.bundle directories, most deliberate first.
+
+    OFX_PLUGIN_PATH wins, then the standard shared and per-user directories,
+    then a few places people actually put them, then beside this checkout,
+    which is where an unpacked download sits.  Each root is tried directly and
+    with a Plugins/ subdirectory, since both layouts are in the wild.
+    """
+    home = Path.home()
+    roots: list[Path] = []
     roots += [Path(p) for p in os.environ.get("OFX_PLUGIN_PATH", "").split(":") if p]
-    roots.append(HERE.parent)  # an unpacked download sits beside this checkout
-    return roots
+    roots += [
+        Path("/usr/OFX/Plugins"),
+        Path("/usr/local/OFX/Plugins"),
+        Path("/opt/OFX/Plugins"),
+        home / "OFX" / "Plugins",
+        home / ".OFX" / "Plugins",
+        home / ".local" / "share" / "OFX" / "Plugins",
+        home / "local" / "OFX",
+        home / ".local" / "OFX",
+        HERE.parent,
+    ]
+    out: list[Path] = []
+    for r in roots:
+        for cand in (r, r / "Plugins"):
+            if cand not in out:
+                out.append(cand)
+    return out
 
 
 def find_bundle(explicit: str | None) -> Path:

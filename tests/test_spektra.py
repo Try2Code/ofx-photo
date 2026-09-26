@@ -283,6 +283,22 @@ def test_chain(h: Harness):
     check("two chained passes differ from either alone",
           not np.array_equal(both, diff) and not np.array_equal(both, vign))
 
+    # OFX_PLUGIN_PATH must win, so a deliberate choice is never ignored.
+    import os as _os
+    saved = _os.environ.get("OFX_PLUGIN_PATH")
+    with tempfile.TemporaryDirectory() as td:
+        fake = Path(td) / "spektrafilm.ofx.bundle"
+        fake.mkdir()
+        _os.environ["OFX_PLUGIN_PATH"] = td
+        try:
+            check("OFX_PLUGIN_PATH takes precedence",
+                  cli.find_bundle(None) == fake, str(cli.find_bundle(None)))
+        finally:
+            if saved is None:
+                _os.environ.pop("OFX_PLUGIN_PATH", None)
+            else:
+                _os.environ["OFX_PLUGIN_PATH"] = saved
+
     check("bundle aliases resolve",
           cli.find_bundle("lens").name == "spektrafilm_lens.ofx.bundle",
           cli.find_bundle("lens").name)
