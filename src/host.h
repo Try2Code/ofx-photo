@@ -18,6 +18,7 @@
 #include "ofxProgress.h"
 #include "ofxProperty.h"
 #include "ofxColour.h"
+#include "ofxGPURender.h"
 
 namespace spektra {
 
@@ -142,9 +143,12 @@ struct Param {
   }
 };
 
+struct Effect;
+
 struct ParamSet {
   std::vector<std::unique_ptr<Param>> order;
   std::map<std::string, Param *> byName;
+  Effect *owner = nullptr; // valid during describe too, unlike Host::instance()
 
   Param *find(const std::string &n) const {
     auto it = byName.find(n);
@@ -196,6 +200,9 @@ struct Image {
   float *data() { return pixels.data(); }
   int rowBytes() const { return width * components * (int)sizeof(float); }
 };
+
+// Implemented in suites.cpp.
+const void *hostFetchSuite(OfxPropertySetHandle host, const char *name, int version);
 
 // ------------------------------------------------------------------- the host
 

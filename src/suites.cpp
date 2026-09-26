@@ -176,8 +176,10 @@ OfxStatus paramGetHandle(OfxParamSetHandle set, const char *name,
 }
 
 OfxStatus paramSetGetPropertySet(OfxParamSetHandle set, OfxPropertySetHandle *out) {
-  if (!Host::current || !Host::current->instance()) return kOfxStatErrBadHandle;
-  *out = handleOf(&Host::current->instance()->props);
+  if (!set) return kOfxStatErrBadHandle;
+  Effect *owner = paramSet(set)->owner;
+  if (!owner) return kOfxStatErrBadHandle;
+  *out = handleOf(&owner->props);
   return kOfxStatOK;
 }
 
@@ -240,13 +242,10 @@ OfxStatus paramGetValue(OfxParamHandle h, ...) {
   return s;
 }
 
-OfxStatus paramGetValueAtTime(OfxParamHandle h, OfxTime, ...) {
+OfxStatus paramGetValueAtTime(OfxParamHandle h, OfxTime time, ...) {
   if (!h) return kOfxStatErrBadHandle;
   va_list args;
-  va_start(args, h);
-  // Skip the OfxTime that sits before the varargs in the caller's frame?  No:
-  // va_start is anchored on the last named parameter, so args already points
-  // at the first vararg.
+  va_start(args, time); // anchor on the last named parameter, not the handle
   OfxStatus s = readValue(param(h), args);
   va_end(args);
   return s;
@@ -261,10 +260,10 @@ OfxStatus paramSetValue(OfxParamHandle h, ...) {
   return s;
 }
 
-OfxStatus paramSetValueAtTime(OfxParamHandle h, OfxTime, ...) {
+OfxStatus paramSetValueAtTime(OfxParamHandle h, OfxTime time, ...) {
   if (!h) return kOfxStatErrBadHandle;
   va_list args;
-  va_start(args, h);
+  va_start(args, time); // anchor on the last named parameter, not the handle
   OfxStatus s = writeValue(param(h), args);
   va_end(args);
   return s;
