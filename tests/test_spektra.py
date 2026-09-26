@@ -516,6 +516,24 @@ def test_gui_model(h: Harness):
     check("CLI reproduces the GUI exactly", np.array_equal(gui_px, cli_px),
           "max diff %.8f" % float(np.abs(gui_px - cli_px).max()))
 
+    # Dependent dropdowns: picking a Stock Category rewrites the Stock list on
+    # the plugin's side, and the panel has to re-read it.  Hosts get this wrong
+    # - the same stale menu shows up in Natron.
+    if "filmCategory" in w.widgets and "film" in w.widgets:
+        cat = w.widgets["filmCategory"][1]
+        stock = w.widgets["film"][1]
+        seen = {}
+        for name in ("B&W Still Film", "Motion Picture", "Positive/Slide Film"):
+            cat.setCurrentText(name)
+            seen[name] = [stock.itemText(i) for i in range(stock.count())]
+        check("changing Stock Category rewrites the Stock list",
+              len({len(v) for v in seen.values()}) > 1,
+              ", ".join(f"{k}={len(v)}" for k, v in seen.items()))
+        check("the rewritten list holds the right stocks",
+              any("Ilford" in s for s in seen["B&W Still Film"])
+              and any("Vision3" in s for s in seen["Motion Picture"]))
+        w.dirty.discard("filmCategory")
+
     # The plugin declares "Print" in three separate runs and "Film" in two, so
     # a panel that starts a section whenever the parent changes shows those
     # titles several times over.  One section per group, each titled once.

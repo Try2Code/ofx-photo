@@ -788,7 +788,55 @@ class Window(QMainWindow):
                 self.statusBar().showMessage(
                     f"switched on {enable.removeprefix('quick')} to apply the preset",
                     4000)
+        entry = self.widgets.get(name)
+        if entry and entry[0] == "choice":
+            self.refresh_choices()
         self.on_change()
+
+    @staticmethod
+    def _set_choices(w, options, index):
+        """Replace a dropdown's options, keeping the selection where we can.
+
+        Several choices are dependent: picking a Stock Category rewrites the
+        Stock list, and the plugin does that on its side.  A panel that only
+        ever wrote values would leave the old list on screen.
+        """
+        current = [w.itemText(i) for i in range(w.count())]
+        if current != list(options):
+            keep = w.currentText()
+            w.clear()
+            w.addItems(options)
+            at = w.findText(keep)
+            w.setCurrentIndex(at if at >= 0 else
+                              min(max(int(index), 0), max(len(options) - 1, 0)))
+        elif 0 <= int(index) < w.count():
+            w.setCurrentIndex(int(index))
+
+    def refresh_choices(self):
+        """Re-read every dropdown's options from the plugin.
+
+        Only worth doing after a choice is edited, since those are what drive
+        the dependent lists; it costs one describe call.
+        """
+        if not self.widgets:
+            return
+        state = self.rend.by_name(self.current_sets())
+        self.syncing = True
+        try:
+            for name, (kind, w) in self.widgets.items():
+                if kind != "choice":
+                    continue
+                p = state.get(name)
+                if not p or "choices" not in p:
+                    continue
+                w.blockSignals(True)
+                # A dropdown the user has set keeps their choice; the rest
+                # follow whatever the plugin now reports.
+                self._set_choices(w, p["choices"],
+                                  w.currentIndex() if name in self.dirty else p["value"])
+                w.blockSignals(False)
+        finally:
+            self.syncing = False
 
     def sync_widgets(self):
         """Pull the values the preset actually produced back into the panel."""
@@ -805,8 +853,7 @@ class Window(QMainWindow):
                 if kind == "bool":
                     w.setChecked(bool(p["value"][0]))
                 elif kind == "choice":
-                    if p["value"] < w.count():
-                        w.setCurrentIndex(p["value"])
+                    self._set_choices(w, p["choices"], p["value"])
                 else:
                     w.setValue(p["value"][0])
                     w.setBaseline(p["value"][0])
