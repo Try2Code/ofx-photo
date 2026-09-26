@@ -304,7 +304,7 @@ twice.
 ./tests/test_spektra.py --quick -k session              # narrow it down
 ```
 
-107 checks across the host, presets, determinism, parameter overrides, sessions, output
+126 checks across the host, presets, determinism, parameter overrides, sessions, output
 encoding, chained passes, exposure bias, image I/O, raw scaling, ICC handling and the GUI
 model. **The GUI runs offscreen**, so the whole suite needs no display and no clicking.
 
