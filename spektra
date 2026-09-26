@@ -631,6 +631,33 @@ def resolve_preset(rend: Renderer, wanted: str) -> list[tuple[str, str]]:
     sys.exit(f"spektra: no preset called {wanted!r}. Did you mean:\n  {hint}")
 
 
+# Choice parameters whose options are rewritten by another choice.  Verified by
+# sweeping all 133: these are the only three.
+DEPENDENT_CHOICES = (
+    ("filmCategory", "film", "film stocks"),
+    ("printCategory", "paper", "print stocks and papers"),
+)
+
+
+def stocks_for(rend: Renderer, category_param: str, stock_param: str,
+               category: str) -> list[str]:
+    """The stock list the plugin offers for one category."""
+    return rend.by_name([(category_param, category)])[stock_param]["choices"]
+
+
+def list_stocks(rend: Renderer, which: str | None = None) -> None:
+    by = rend.by_name()
+    for cat_param, stock_param, title in DEPENDENT_CHOICES:
+        if which and which not in title:
+            continue
+        print(f"\n{title}:")
+        for category in by[cat_param]["choices"]:
+            names = stocks_for(rend, cat_param, stock_param, category)
+            print(f"\n  {category}  ({len(names)})")
+            for n in names:
+                print(f"      {n}")
+
+
 def list_presets(rend: Renderer) -> None:
     for cat in rend.by_name()[P_CATEGORY]["choices"]:
         names = rend.by_name([(P_CATEGORY, cat)])[P_SELECTION]["choices"]
@@ -740,6 +767,7 @@ def main() -> None:
   spektra photo.jpg out.jpg --set exposure=0.3
   spektra --list-presets
   spektra --list-params --grep grain
+  spektra --list-stocks film
   spektra shots/*.NEF outdir/ --preset "Vintage Faded"
 
   # reproducible renders, and sessions shared with the GUI
@@ -783,6 +811,8 @@ def main() -> None:
     ap.add_argument("--jobs", type=int, default=1, help="parallel images")
     ap.add_argument("--info", action="store_true",
                     help="report metadata and decoded statistics, then exit")
+    ap.add_argument("--list-stocks", nargs="?", const="", metavar="film|print",
+                    help="list the stocks each Stock Category offers")
     ap.add_argument("--list-presets", action="store_true")
     ap.add_argument("--list-params", action="store_true")
     ap.add_argument("--grep", metavar="TEXT", help="filter --list-params")
@@ -796,6 +826,10 @@ def main() -> None:
             ap.error("--info needs at least one image")
         paths = list(args.inputs) + ([args.output] if args.output else [])
         print(json.dumps([describe_image(p) for p in paths], indent=2))
+        return
+
+    if args.list_stocks is not None:
+        list_stocks(rend, args.list_stocks or None)
         return
 
     if args.list_presets:

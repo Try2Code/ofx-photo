@@ -330,6 +330,66 @@ def test_exposure_bias(h: Harness, raw: Path | None):
     check("a non-raw file is left alone", same is jpeg, jnote)
 
 
+def test_dependent_choices(h: Harness):
+    """Each Stock Category must offer the stocks that belong to it.
+
+    A host that caches a dropdown's options at describe time never sees the
+    plugin rewrite them, and shows films from the wrong category.
+    """
+    by = h.rend.by_name()
+
+    expect = {
+        "Motion Picture": ("Vision3", "Kodak"),
+        "B&W Motion Picture": ("Double-X", "Eastman"),
+        "Still Film": ("Portra", "Kodak"),
+        "B&W Still Film": ("Ilford", "Delta"),
+        "Positive/Slide Film": ("Ektachrome", "Kodak"),
+        "Fujifilm": ("Fujifilm",),
+        "Ilford": ("Ilford",),
+    }
+
+    for cat_param, stock_param, title in cli.DEPENDENT_CHOICES:
+        categories = by[cat_param]["choices"]
+        seen = {}
+        for category in categories:
+            names = cli.stocks_for(h.rend, cat_param, stock_param, category)
+            seen[category] = names
+            if not check(f"{title}: {category!r} offers stocks", len(names) > 0,
+                         f"{len(names)} entries"):
+                continue
+            wanted = expect.get(category)
+            if wanted:
+                hit = any(any(k in n for n in names) for k in wanted)
+                check(f"{title}: {category!r} offers the right ones", hit,
+                      f"{names[0]!r} …")
+            # A brand category must only offer that brand.
+            if category in ("Fujifilm", "Ilford"):
+                check(f"{title}: {category!r} is all {category}",
+                      all(category.lower() in n.lower() for n in names),
+                      f"{sum(category.lower() not in n.lower() for n in names)} strays")
+
+        lengths = {len(v) for v in seen.values()}
+        check(f"{title}: categories differ from one another", len(lengths) > 1,
+              ", ".join(f"{k}={len(v)}" for k, v in list(seen.items())[:4]))
+
+    # And the full sweep: exactly these choices rewrite others.
+    base = {x["name"]: list(x["choices"])
+            for x in h.rend.params if x["type"] == "OfxParamTypeChoice"}
+    drivers = {c[0] for c in cli.DEPENDENT_CHOICES} | {cli.P_CATEGORY}
+    found = set()
+    for name in ("filmCategory", "printCategory", cli.P_CATEGORY, "rgbToRawMethod",
+                 "outputRole", "process"):
+        if name not in base or len(base[name]) < 2:
+            continue
+        alt = base[name][1]
+        state = h.rend.by_name([(name, alt)])
+        if any(m != name and m in state and list(state[m].get("choices", [])) != b
+               for m, b in base.items()):
+            found.add(name)
+    check("the known drivers are the ones that rewrite dropdowns",
+          found == drivers, f"found {sorted(found)}, expected {sorted(drivers)}")
+
+
 def test_output_encoding(h: Harness):
     """The plugin returns display-encoded pixels, not linear ones.
 
@@ -614,6 +674,7 @@ def main():
         ("profiles", lambda: test_colour_profiles(h)),
         ("metadata", lambda: test_metadata(h)),
         ("bias", lambda: test_exposure_bias(h, args.raw)),
+        ("stocks", lambda: test_dependent_choices(h)),
         ("chain", lambda: test_chain(h)),
         ("encoding", lambda: test_output_encoding(h)),
         ("gui", lambda: test_gui_model(h)),

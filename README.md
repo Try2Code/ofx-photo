@@ -133,6 +133,8 @@ Finding your way around 830 parameters:
 ```sh
 ./spektra --list-presets                  # 88 bundled, plus your own
 ./spektra --list-params --grep grain      # search names, labels and hints
+./spektra --list-stocks film              # which films each Stock Category offers
+./spektra --list-stocks print             # and which papers
 ./spektra --info photo.NEF                # EXIF, ICC, and decoded statistics
 ```
 
@@ -302,7 +304,7 @@ twice.
 ./tests/test_spektra.py --quick -k session              # narrow it down
 ```
 
-87 checks across the host, presets, determinism, parameter overrides, sessions, output
+107 checks across the host, presets, determinism, parameter overrides, sessions, output
 encoding, chained passes, exposure bias, image I/O, raw scaling, ICC handling and the GUI
 model. **The GUI runs offscreen**, so the whole suite needs no display and no clicking.
 
@@ -350,6 +352,12 @@ does nothing at all. The GUI arms it for you and says so.
 
 **The preview is downscaled** to 1100 px. Grain and halation are resolution dependent, so
 use **Render full resolution** before saving to see the real thing.
+
+**Some dropdowns rewrite others.** Choosing a Stock Category replaces the Stock list —
+Motion Picture offers 14 films, B&W Still Film 6 — and a Preset Category replaces the
+Preset list. A host that caches those options at describe time shows films from the wrong
+category; the same stale menu appears in Natron. All three such dependencies are covered,
+and `--list-stocks` prints what each category actually offers.
 
 **Only parameters you actually change are sent** to the plugin. Sending them all would
 re-apply defaults over whatever preset was just loaded.
