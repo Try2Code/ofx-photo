@@ -178,7 +178,7 @@ tests/test_spektra.py --photo p.jpg --raw p.NEF         # your own files
 tests/test_spektra.py --quick -k session                # narrow it down
 ```
 
-78 checks across the host, presets, determinism, parameter overrides, sessions,
+77 checks across the host, presets, determinism, parameter overrides, sessions,
 colourspaces, output encoding, chained passes, image I/O, raw scaling, ICC handling and
 the GUI model. The GUI runs offscreen, so the whole suite needs no display and no
 clicking.
