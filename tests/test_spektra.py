@@ -402,6 +402,29 @@ def test_gui_model(h: Harness):
     check("CLI reproduces the GUI exactly", np.array_equal(gui_px, cli_px),
           "max diff %.8f" % float(np.abs(gui_px - cli_px).max()))
 
+    # The plugin declares "Print" in three separate runs and "Film" in two, so
+    # a panel that starts a section whenever the parent changes shows those
+    # titles several times over.  One section per group, each titled once.
+    from PyQt5.QtCore import QCoreApplication, QEventLoop
+    from PyQt5.QtWidgets import QToolButton
+    import collections
+
+    def drain():
+        for _ in range(5):
+            QCoreApplication.sendPostedEvents(None, 0)
+            QCoreApplication.processEvents(QEventLoop.AllEvents, 50)
+
+    for show_all in (False, True):
+        w.chk_all.setChecked(show_all)
+        drain()
+        titles = [h.text().rsplit("  (", 1)[0]
+                  for h in w.param_host.findChildren(QToolButton)]
+        dupes = {k: v for k, v in collections.Counter(titles).items() if v > 1}
+        check(f"group titles unique ({'all' if show_all else 'quick'} mode)",
+              not dupes, f"{len(titles)} sections" + (f", repeated: {dupes}" if dupes else ""))
+    w.chk_all.setChecked(False)
+    drain()
+
     # A session may carry any of the 830 parameters, including ones the panel
     # does not display.  Those must survive import rather than be dropped.
     hidden = dict(s, params={"filmExposureEv": "1.5"})

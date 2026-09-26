@@ -322,16 +322,24 @@ class Window(QMainWindow):
     def rebuild_params(self):
         while self.param_layout.count():
             item = self.param_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            w = item.widget()
+            if w:
+                # Unparent at once.  deleteLater alone leaves the old widgets
+                # attached until the event loop gets round to them, so a rebuild
+                # could still find the previous build's section headers.
+                w.setParent(None)
+                w.deleteLater()
         self.widgets.clear()
 
         params = self.rend.params
         groups = {p["name"]: p["label"] for p in params if p["type"] == "OfxParamTypeGroup"}
         show_all = self.chk_all.isChecked()
 
-        current = None
-        form = None
+        # Collect by group first.  The plugin does not declare its parameters
+        # contiguously - "Print" comes in three separate runs and "Film" in two
+        # - so walking the list and starting a section whenever the parent
+        # changes produced the same title several times over.
+        sections: dict[str, list[dict]] = {}
         for p in params:
             if p["type"] in ("OfxParamTypeGroup", "OfxParamTypePushButton"):
                 continue
@@ -340,57 +348,59 @@ class Window(QMainWindow):
             if not show_all and not p["name"].startswith("quick"):
                 continue
             if p["name"] in (cli.P_CATEGORY, cli.P_SELECTION, cli.P_USER_PRESET,
-                             cli.P_INPUT_CS, cli.P_PRESET_NAME):
+                             cli.P_INPUT_CS, cli.P_PRESET_NAME, cli.P_OUTPUT_CS):
                 continue
+            sections.setdefault(p.get("parent") or "", []).append(p)
 
-            parent = p.get("parent") or ""
-            if parent != current:
-                current = parent
-                title = groups.get(parent, parent or "General")
-                head = QToolButton()
-                head.setText(title)
-                head.setCheckable(True)
-                head.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-                head.setStyleSheet(
-                    "QToolButton{color:#8ab4f8;font-weight:bold;border:none;"
-                    "margin-top:8px;text-align:left;}")
-                head.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-                self.param_layout.addWidget(head)
-                holder = QWidget()
-                form = QFormLayout(holder)
-                form.setContentsMargins(4, 0, 0, 0)
-                form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-                form.setRowWrapPolicy(QFormLayout.WrapLongRows)
-                form.setLabelAlignment(Qt.AlignLeft)
-                self.param_layout.addWidget(holder)
+        for parent, items in sections.items():
+            title = groups.get(parent, parent or "General")
+            head = QToolButton()
+            head.setText(title)
+            head.setCheckable(True)
+            head.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            head.setStyleSheet(
+                "QToolButton{color:#8ab4f8;font-weight:bold;border:none;"
+                "margin-top:8px;text-align:left;}")
+            head.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            self.param_layout.addWidget(head)
 
-                # Remember which groups the user left open across rebuilds.
-                # With every parameter shown there are 49 of them, so they
-                # start collapsed in that mode and open in the quick one.
-                open_now = self.group_open.get(parent, not show_all)
-                head.setChecked(open_now)
-                holder.setVisible(open_now)
-                head.setArrowType(Qt.DownArrow if open_now else Qt.RightArrow)
+            holder = QWidget()
+            form = QFormLayout(holder)
+            form.setContentsMargins(4, 0, 0, 0)
+            form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+            form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+            form.setLabelAlignment(Qt.AlignLeft)
+            self.param_layout.addWidget(holder)
 
-                def toggled(on, h=holder, b=head, key=parent):
-                    h.setVisible(on)
-                    b.setArrowType(Qt.DownArrow if on else Qt.RightArrow)
-                    self.group_open[key] = on
+            # Remember which groups the user left open across rebuilds.  With
+            # every parameter shown there are dozens, so they start collapsed
+            # in that mode and open in the quick one.
+            open_now = self.group_open.get(parent, not show_all)
+            head.setChecked(open_now)
+            holder.setVisible(open_now)
+            head.setArrowType(Qt.DownArrow if open_now else Qt.RightArrow)
 
-                head.toggled.connect(toggled)
+            def toggled(on, h=holder, b=head, key=parent):
+                h.setVisible(on)
+                b.setArrowType(Qt.DownArrow if on else Qt.RightArrow)
+                self.group_open[key] = on
 
-            w = self._widget_for(p)
-            if w is not None and form is not None:
+            head.toggled.connect(toggled)
+
+            for p in items:
+                w = self._widget_for(p)
+                if w is None:
+                    continue
                 w.setFocusPolicy(Qt.StrongFocus)
                 w.installEventFilter(self.wheel_guard)
                 w.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
                 if isinstance(w, QComboBox):
-                    # a long option must not widen the whole panel
                     w.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
                     w.setMinimumContentsLength(12)
                 label = QLabel(p["label"])
                 label.setWordWrap(True)
                 form.addRow(label, w)
+            head.setText(f"{title}  ({len(items)})")
 
         if not self.widgets:
             self.param_layout.addWidget(QLabel("No quick parameters; tick the box above."))
