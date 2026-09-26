@@ -54,11 +54,36 @@ Requirements:
 | `libraw-bin` (`dcraw_emu`) | camera raw, optional |
 | ImageMagick (`convert`) | 16-bit output and ICC conversion, optional |
 
+Either run it from the checkout:
+
 ```sh
 cmake -S . -B build && cmake --build build
 ./tests/test_spektra.py                        # check it works
 ./install-desktop.sh                            # --uninstall reverses it
 ```
+
+or install it into a prefix:
+
+```sh
+cmake -S . -B build -DCMAKE_INSTALL_PREFIX=~/local
+cmake --build build
+cmake --install build
+```
+
+That places `spektra`, `spektra-gui` and `spektra-render` in `<prefix>/bin`, and the
+desktop entry and icons under `<prefix>/share`. The default prefix is `~/.local`, which
+needs no root and is already on the desktop's search path.
+
+For any other prefix, two things have to be on the path for the menu entry to appear —
+the installer prints both:
+
+```sh
+export PATH="$HOME/local/bin:$PATH"
+export XDG_DATA_DIRS="$HOME/local/share:$XDG_DATA_DIRS"
+```
+
+The tools find each other by sitting together in one `bin`, so the prefix can be moved or
+renamed freely.
 
 `install-desktop.sh` adds a **Spektra Photo** entry to the applications menu and to the
 *Open With* list for JPEG, PNG, TIFF and the common raw formats. It writes only under

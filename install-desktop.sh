@@ -44,7 +44,7 @@ for s in $SIZES; do
 done
 
 # Absolute paths: the launcher must work whatever the working directory is.
-sed -e "s|@EXEC@|$HERE/spektra-gui|" -e "s|@ICON@|ofx-photo|" \
+sed -e "s|@OFX_PHOTO_EXEC@|$HERE/spektra-gui|" -e "s|@OFX_PHOTO_ICON@|ofx-photo|" \
     "$HERE/desktop/ofx-photo.desktop.in" > "$DESKTOP"
 chmod 644 "$DESKTOP"
 
