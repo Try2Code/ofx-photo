@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 from PyQt5.QtCore import (QEvent, QObject, QSettings, QSize, Qt, QThread,
                           pyqtSignal)
-from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtGui import QColor, QImage, QPalette, QPixmap
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
     QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton,
@@ -30,6 +30,56 @@ cli = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(cli)
 
 PREVIEW_EDGE = 1100
+
+# Shown without ticking "show every parameter".  These are the groups worth
+# reaching for on most photographs.
+DEFAULT_GROUPS = ("quickAccessGroup", "filmGroup", "printGroup", "grainGroup")
+
+THEMES = {
+    "dark": {
+        "window": "#353535", "text": "#e8e8e8", "base": "#2a2a2a",
+        "button": "#3a3a3a", "highlight": "#2a82da", "highlightText": "#000000",
+        "view": "#121212", "viewBorder": "#2a2a2a",
+        "head": "#8ab4f8", "readout": "#dddddd", "muted": "#999999",
+    },
+    "light": {
+        "window": "#efefef", "text": "#1c1c1c", "base": "#ffffff",
+        "button": "#e4e4e4", "highlight": "#3572b0", "highlightText": "#ffffff",
+        "view": "#d8d8d8", "viewBorder": "#bbbbbb",
+        "head": "#1a4f9c", "readout": "#222222", "muted": "#666666",
+    },
+}
+
+
+def apply_theme(app, name: str) -> None:
+    """Repaint the whole application in the chosen theme."""
+    c = THEMES.get(name, THEMES["dark"])
+    pal = QPalette()
+    pal.setColor(QPalette.Window, QColor(c["window"]))
+    pal.setColor(QPalette.WindowText, QColor(c["text"]))
+    pal.setColor(QPalette.Base, QColor(c["base"]))
+    pal.setColor(QPalette.AlternateBase, QColor(c["window"]))
+    pal.setColor(QPalette.ToolTipBase, QColor(c["base"]))
+    pal.setColor(QPalette.ToolTipText, QColor(c["text"]))
+    pal.setColor(QPalette.Text, QColor(c["text"]))
+    pal.setColor(QPalette.Button, QColor(c["button"]))
+    pal.setColor(QPalette.ButtonText, QColor(c["text"]))
+    pal.setColor(QPalette.BrightText, QColor("#ff5555"))
+    pal.setColor(QPalette.Highlight, QColor(c["highlight"]))
+    pal.setColor(QPalette.HighlightedText, QColor(c["highlightText"]))
+    pal.setColor(QPalette.Disabled, QPalette.Text, QColor(c["muted"]))
+    pal.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(c["muted"]))
+    app.setPalette(pal)
+    # Object names let a theme change restyle widgets already on screen,
+    # without rebuilding the parameter panel.
+    app.setStyleSheet(f"""
+        QLabel#readout {{ color: {c['readout']}; }}
+        QLabel#muted {{ color: {c['muted']}; }}
+        QToolButton#groupHead {{ color: {c['head']}; font-weight: bold;
+                                 border: none; margin-top: 8px; text-align: left; }}
+        QLabel#imageView {{ background: {c['view']};
+                            border: 1px solid {c['viewBorder']}; }}
+    """)
 
 
 # resize_linear lives in the CLI module, so both sides scale previews alike.
@@ -49,6 +99,98 @@ class WheelGuard(QObject):
             ev.ignore()
             return True
         return super().eventFilter(obj, ev)
+
+
+class SliderRow(QWidget):
+    """A slider, its value, and a button that puts it back.
+
+    Replaces the spin boxes: dragging beats clicking a tiny arrow 200 times,
+    and "back to what the preset said" is one click rather than a guess.
+    """
+
+    valueChanged = pyqtSignal(float)
+    STEPS = 1000
+
+    def __init__(self, lo: float, hi: float, value: float, integer: bool = False):
+        super().__init__()
+        if not (hi > lo):
+            hi = lo + 1.0
+        self.lo, self.hi, self.integer = float(lo), float(hi), integer
+        self._baseline = float(value)
+
+        self.slider = QSlider(Qt.Horizontal)
+        self.direct = integer and (hi - lo) <= self.STEPS
+        self.slider.setRange(int(lo), int(hi)) if self.direct else \
+            self.slider.setRange(0, self.STEPS)
+        self.slider.setFocusPolicy(Qt.StrongFocus)
+
+        self.readout = QLabel()
+        self.readout.setMinimumWidth(56)
+        self.readout.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.readout.setObjectName("readout")
+
+        self.reset = QToolButton()
+        self.reset.setText("↺")
+        self.reset.setToolTip("Back to the preset's value")
+        self.reset.setAutoRaise(True)
+        self.reset.clicked.connect(lambda: self.setValue(self._baseline, notify=True))
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
+        row.addWidget(self.slider, 1)
+        row.addWidget(self.readout)
+        row.addWidget(self.reset)
+
+        self.setValue(value)
+        self.slider.valueChanged.connect(self._moved)
+
+    # -- mapping between the slider's integer steps and the real value
+    def _to_slider(self, v: float) -> int:
+        if self.direct:
+            return int(round(v))
+        frac = (v - self.lo) / (self.hi - self.lo)
+        return int(round(min(max(frac, 0.0), 1.0) * self.STEPS))
+
+    def _from_slider(self, i: int) -> float:
+        if self.direct:
+            return float(i)
+        v = self.lo + (i / self.STEPS) * (self.hi - self.lo)
+        return round(v) if self.integer else v
+
+    def _moved(self, i):
+        self._value = self._from_slider(i)
+        self._refresh()
+        self.valueChanged.emit(self._value)
+
+    def _refresh(self):
+        self.readout.setText(f"{self._value:.0f}" if self.integer
+                             else f"{self._value:.3g}")
+        at_base = abs(self._value - self._baseline) < 1e-9
+        self.reset.setEnabled(not at_base)
+
+    def value(self) -> float:
+        return self._value
+
+    def setValue(self, v: float, notify: bool = False):
+        self._value = float(v)
+        blocked = self.slider.blockSignals(True)
+        self.slider.setValue(self._to_slider(self._value))
+        self.slider.blockSignals(blocked)
+        self._refresh()
+        if notify:
+            self.valueChanged.emit(self._value)
+
+    def setBaseline(self, v: float):
+        self._baseline = float(v)
+        self._refresh()
+
+    def wheelEvent(self, ev):
+        # Let the panel scroll past unless this row has been clicked into.
+        if not self.slider.hasFocus():
+            ev.ignore()
+        else:
+            super().wheelEvent(ev)
 
 
 # ------------------------------------------------------------- render thread
@@ -79,7 +221,7 @@ class ImageView(QLabel):
         self.setAlignment(Qt.AlignCenter)
         self.setMinimumSize(QSize(480, 320))
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.setStyleSheet("background:#121212;border:1px solid #2a2a2a;")
+        self.setObjectName("imageView")
         self.setText("Open a photo to begin")
         self._pm: QPixmap | None = None
 
@@ -122,6 +264,7 @@ class Window(QMainWindow):
         self.job: RenderJob | None = None
         self.pending = False
         self.showing_original = False
+        self.theme = "dark"
         self.widgets: dict[str, tuple[str, object]] = {}
         self.wheel_guard = WheelGuard()
         self.group_open: dict[str, bool] = {}
@@ -147,10 +290,15 @@ class Window(QMainWindow):
 
         left = QVBoxLayout()
         bar = QHBoxLayout()
+        self.b_theme = QToolButton()
+        self.b_theme.setAutoRaise(True)
+        self.b_theme.setToolTip("Switch between the dark and light theme")
+        self.b_theme.clicked.connect(self.toggle_theme)
+        bar.addWidget(self.b_theme)
         b_open = QPushButton("Open…")
         b_open.clicked.connect(self.open_photo)
         self.lbl_file = QLabel("no photo")
-        self.lbl_file.setStyleSheet("color:#999;")
+        self.lbl_file.setObjectName("muted")
         bar.addWidget(b_open)
         bar.addWidget(self.lbl_file, 1)
         b_cmp = QPushButton("Hold to compare")
@@ -247,7 +395,7 @@ class Window(QMainWindow):
         for wdg in (self.chk_diffuse, self.chk_lens):
             wdg.toggled.connect(self.on_change)
         for wdg in (self.cb_vignette, self.cb_distort):
-            wdg.currentIndexChanged.connect(self.on_change)
+            wdg.currentIndexChanged.connect(self.on_lens_choice)
             wdg.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
             wdg.setMinimumContentsLength(12)
         passes.addRow(self.chk_diffuse, QLabel(""))
@@ -345,7 +493,8 @@ class Window(QMainWindow):
                 continue
             if p.get("secret"):
                 continue
-            if not show_all and not p["name"].startswith("quick"):
+            if not show_all and not (p["name"].startswith("quick")
+                                     or p.get("parent") in DEFAULT_GROUPS):
                 continue
             if p["name"] in (cli.P_CATEGORY, cli.P_SELECTION, cli.P_USER_PRESET,
                              cli.P_INPUT_CS, cli.P_PRESET_NAME, cli.P_OUTPUT_CS):
@@ -358,9 +507,7 @@ class Window(QMainWindow):
             head.setText(title)
             head.setCheckable(True)
             head.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-            head.setStyleSheet(
-                "QToolButton{color:#8ab4f8;font-weight:bold;border:none;"
-                "margin-top:8px;text-align:left;}")
+            head.setObjectName("groupHead")
             head.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             self.param_layout.addWidget(head)
 
@@ -430,26 +577,21 @@ class Window(QMainWindow):
             w.currentIndexChanged.connect(lambda _, n=name: self.on_edit(n))
             self.widgets[name] = ("choice", w)
             return w
-        if t == "OfxParamTypeDouble":
-            w = QDoubleSpinBox()
-            lo = p.get("displayMin", p.get("min", -1e6))
-            hi = p.get("displayMax", p.get("max", 1e6))
-            lo, hi = max(lo, -1e6), min(hi, 1e6)
-            w.setRange(lo, hi)
-            w.setDecimals(3)
-            w.setSingleStep(max((hi - lo) / 100.0, 0.001))
-            w.setValue(p["value"][0])
+        if t in ("OfxParamTypeDouble", "OfxParamTypeInteger"):
+            integer = t == "OfxParamTypeInteger"
+            lo = p.get("displayMin", p.get("min", 0.0))
+            hi = p.get("displayMax", p.get("max", 1.0))
+            # A few parameters declare an enormous nominal range; fall back to
+            # something a slider can actually address.
+            if not (hi > lo) or (hi - lo) > 1e5:
+                lo, hi = p.get("min", 0.0), p.get("max", 1.0)
+            if not (hi > lo) or (hi - lo) > 1e5:
+                v = float(p["value"][0])
+                lo, hi = v - 10.0, v + 10.0
+            w = SliderRow(lo, hi, p["value"][0], integer=integer)
             w.setToolTip(p.get("hint", ""))
             w.valueChanged.connect(lambda _, n=name: self.on_edit(n))
-            self.widgets[name] = ("double", w)
-            return w
-        if t == "OfxParamTypeInteger":
-            w = QDoubleSpinBox()
-            w.setDecimals(0)
-            w.setRange(max(p.get("min", -1e6), -1e6), min(p.get("max", 1e6), 1e6))
-            w.setValue(p["value"][0])
-            w.valueChanged.connect(lambda _, n=name: self.on_edit(n))
-            self.widgets[name] = ("int", w)
+            self.widgets[name] = ("int" if integer else "double", w)
             return w
         return None
 
@@ -598,6 +740,21 @@ class Window(QMainWindow):
         if self.syncing:
             return
         self.dirty.add(name)
+        # Choosing a preset for an effect that is switched off looks broken:
+        # nothing happens.  Switch it on, the way picking a preset implies.
+        if name.endswith("Preset"):
+            enable = name[: -len("Preset")] + "Enabled"
+            entry = self.widgets.get(enable)
+            if entry and entry[0] == "bool" and not entry[1].isChecked():
+                self.syncing = True
+                try:
+                    entry[1].setChecked(True)
+                finally:
+                    self.syncing = False
+                self.dirty.add(enable)
+                self.statusBar().showMessage(
+                    f"switched on {enable.removeprefix('quick')} to apply the preset",
+                    4000)
         self.on_change()
 
     def sync_widgets(self):
@@ -619,6 +776,7 @@ class Window(QMainWindow):
                         w.setCurrentIndex(p["value"])
                 else:
                     w.setValue(p["value"][0])
+                    w.setBaseline(p["value"][0])
                 w.blockSignals(False)
         finally:
             self.syncing = False
@@ -650,6 +808,19 @@ class Window(QMainWindow):
         self.preview_linear = cli.resize_linear(linear, PREVIEW_EDGE)
         self.lbl_file.setText(f"{path.name}   {w}×{h}")
         self.settings.setValue("last_dir", str(path.parent))
+        self.on_change()
+
+    def on_lens_choice(self):
+        """Choosing a lens effect arms the pass, which would otherwise be off."""
+        if self.syncing:
+            return
+        wants = (self.cb_vignette.currentText() != "Off"
+                 or self.cb_distort.currentText() != "Off")
+        if wants and not self.chk_lens.isChecked():
+            self.chk_lens.blockSignals(True)
+            self.chk_lens.setChecked(True)
+            self.chk_lens.blockSignals(False)
+            self.statusBar().showMessage("lens pass switched on", 4000)
         self.on_change()
 
     def on_category(self):
@@ -761,10 +932,21 @@ class Window(QMainWindow):
         self.sync_widgets()
         self.on_change()
 
+    def toggle_theme(self):
+        self.set_theme("light" if self.theme == "dark" else "dark")
+
+    def set_theme(self, name: str):
+        self.theme = name
+        apply_theme(QApplication.instance(), name)
+        # The button shows where clicking would take you.
+        self.b_theme.setText("\u2600" if name == "dark" else "\u263e")
+        self.settings.setValue("theme", name)
+
     def _restore(self):
         g = self.settings.value("geometry")
         if g:
             self.restoreGeometry(g)
+        self.set_theme(self.settings.value("theme", "dark"))
 
     def closeEvent(self, e):
         self.settings.setValue("geometry", self.saveGeometry())

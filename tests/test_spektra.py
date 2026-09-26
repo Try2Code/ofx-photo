@@ -384,6 +384,52 @@ def test_gui_model(h: Harness):
 
     check("panel builds quick controls", len(w.widgets) > 0, f"{len(w.widgets)} controls")
 
+    from PyQt5.QtWidgets import QToolButton
+
+    titles = [h.text().rsplit("  (", 1)[0]
+              for h in w.param_host.findChildren(QToolButton)
+              if h.objectName() == "groupHead"]
+    for wanted in ("Quick Access", "Film", "Print", "Grain"):
+        check(f"{wanted!r} shown by default", wanted in titles)
+
+    # Numeric parameters are sliders with a reset, not spin boxes.
+    sliders = [n for n, (k, x) in w.widgets.items() if isinstance(x, gui.SliderRow)]
+    check("numeric parameters are sliders", len(sliders) > 0, f"{len(sliders)} sliders")
+    if sliders:
+        s = w.widgets[sliders[0]][1]
+        s.setBaseline(s.value())
+        start = s.value()
+        s.slider.setValue(s.slider.value() + 100)
+        moved = s.value()
+        check("dragging a slider changes its value", moved != start,
+              "%.4g -> %.4g" % (start, moved))
+        check("reset is offered once moved", s.reset.isEnabled())
+        s.reset.click()
+        check("reset returns to the preset value", abs(s.value() - start) < 1e-9,
+              "%.4g" % s.value())
+
+    # Choosing a preset for an effect that is off used to do nothing at all.
+    w.chk_all.setChecked(True)
+    if "quickVignettePreset" in w.widgets and "quickVignetteEnabled" in w.widgets:
+        enable = w.widgets["quickVignetteEnabled"][1]
+        enable.setChecked(False)
+        w.dirty.discard("quickVignetteEnabled")
+        w.widgets["quickVignettePreset"][1].setCurrentText("Vintage Mechanical")
+        check("choosing an effect preset switches the effect on", enable.isChecked())
+    w.chk_all.setChecked(False)
+
+    w.cb_vignette.setCurrentText("Vintage Mechanical")
+    check("a lens dropdown arms the lens pass", w.chk_lens.isChecked())
+    check("the armed pass reaches the session",
+          any(c.get("bundle") == "lens" for c in w.session().get("chain", [])))
+    w.cb_vignette.setCurrentText("Off")
+    w.chk_lens.setChecked(False)
+
+    for name in ("light", "dark"):
+        w.set_theme(name)
+        check(f"{name} theme applies", w.theme == name,
+              f"button shows {w.b_theme.text()!r}")
+
     w.chk_seed.setChecked(True)
     w.sp_seed.setValue(SEED)
     w.cb_category.setCurrentText("Creative")
@@ -418,7 +464,8 @@ def test_gui_model(h: Harness):
         w.chk_all.setChecked(show_all)
         drain()
         titles = [h.text().rsplit("  (", 1)[0]
-                  for h in w.param_host.findChildren(QToolButton)]
+                  for h in w.param_host.findChildren(QToolButton)
+                  if h.objectName() == "groupHead"]
         dupes = {k: v for k, v in collections.Counter(titles).items() if v > 1}
         check(f"group titles unique ({'all' if show_all else 'quick'} mode)",
               not dupes, f"{len(titles)} sections" + (f", repeated: {dupes}" if dupes else ""))

@@ -178,7 +178,7 @@ tests/test_spektra.py --photo p.jpg --raw p.NEF         # your own files
 tests/test_spektra.py --quick -k session                # narrow it down
 ```
 
-59 checks across the host, presets, determinism, parameter overrides, sessions,
+74 checks across the host, presets, determinism, parameter overrides, sessions,
 colourspaces, output encoding, chained passes, image I/O, raw scaling, ICC handling and
 the GUI model. The GUI runs offscreen, so the whole suite needs no display and no
 clicking.
@@ -199,6 +199,10 @@ and makes output byte-for-byte repeatable.
 **The preview is downscaled** to 1100 px on the long edge so the controls stay
 responsive. Grain and halation are resolution dependent, so they will not look exactly
 like the full render — use **Render full resolution** before saving to check.
+
+**Choosing a preset for an effect switches that effect on.** The plugin keeps the two
+separate, so picking a vignette preset while vignette is off does nothing at all; the GUI
+now arms it for you and says so in the status bar.
 
 **Only parameters you actually change are sent** to the plugin. Sending them all would
 re-apply defaults over whatever preset was just loaded, which silently destroys the look.
