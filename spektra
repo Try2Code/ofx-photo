@@ -1,0 +1,381 @@
+#!/usr/bin/env python3
+"""spektra - apply an OFX film-emulation plugin to photographs."""
+
+from __future__ import annotations
+
+import argparse
+import difflib
+import json
+import os
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+import numpy as np
+
+try:
+    from PIL import Image, ImageCms  # noqa: F401
+except ImportError:
+    sys.exit("spektra: Pillow is required (pip install Pillow)")
+
+HERE = Path(__file__).resolve().parent
+RAW_SUFFIXES = {
+    ".nef", ".cr2", ".cr3", ".arw", ".dng", ".raf", ".rw2", ".orf",
+    ".pef", ".srw", ".x3f", ".3fr", ".mrw", ".kdc", ".dcr", ".erf",
+}
+
+# Parameters this tool drives by name.  Everything else is discovered.
+P_INPUT_CS = "inputColorSpace"
+P_CATEGORY = "quickPresetCategory"
+P_SELECTION = "quickPresetSelection"
+P_USER_PRESET = "presetSelection"
+P_PRESET_NAME = "presetName"
+P_SAVE = "savePreset"
+P_LOAD = "loadPreset"
+
+
+# --------------------------------------------------------------- locating bits
+
+
+def find_renderer() -> Path:
+    for c in (HERE / "build" / "spektra-render", HERE / "spektra-render"):
+        if c.is_file() and os.access(c, os.X_OK):
+            return c
+    found = shutil.which("spektra-render")
+    if found:
+        return Path(found)
+    sys.exit("spektra: spektra-render not built - run: cmake -S . -B build && cmake --build build")
+
+
+def find_bundle(explicit: str | None) -> Path:
+    if explicit:
+        p = Path(explicit).expanduser()
+        if not p.exists():
+            sys.exit(f"spektra: no such bundle: {p}")
+        return p
+
+    roots = [Path("/usr/OFX/Plugins"), Path.home() / "OFX" / "Plugins"]
+    roots += [Path(p) for p in os.environ.get("OFX_PLUGIN_PATH", "").split(":") if p]
+    # Also look beside this checkout, which is how an unpacked download sits.
+    roots.append(HERE.parent)
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for b in sorted(root.glob("*.ofx.bundle")):
+            if "spektrafilm.ofx.bundle" == b.name:
+                return b
+    sys.exit(
+        "spektra: could not find spektrafilm.ofx.bundle.\n"
+        "Install the plugin, set OFX_PLUGIN_PATH, or pass --bundle PATH."
+    )
+
+
+# ------------------------------------------------------------------ sfraw I/O
+
+
+def sfraw_write(path: Path, rgba: np.ndarray) -> None:
+    h, w, c = rgba.shape
+    with open(path, "wb") as f:
+        f.write(b"SFRW")
+        f.write(struct.pack("<III", w, h, c))
+        # OFX scanlines run bottom-up.
+        f.write(np.ascontiguousarray(rgba[::-1], dtype="<f4").tobytes())
+
+
+def sfraw_read(path: Path) -> np.ndarray:
+    with open(path, "rb") as f:
+        if f.read(4) != b"SFRW":
+            sys.exit(f"spektra: {path} is not an sfraw file")
+        w, h, c = struct.unpack("<III", f.read(12))
+        a = np.frombuffer(f.read(w * h * c * 4), dtype="<f4").reshape(h, w, c)
+    return a[::-1].copy()
+
+
+# -------------------------------------------------------------- colour & I/O
+
+
+def srgb_to_linear(x: np.ndarray) -> np.ndarray:
+    return np.where(x <= 0.04045, x / 12.92, ((x + 0.055) / 1.055) ** 2.4)
+
+
+def linear_to_srgb(x: np.ndarray) -> np.ndarray:
+    x = np.clip(x, 0.0, 1.0)
+    return np.where(x <= 0.0031308, x * 12.92, 1.055 * x ** (1 / 2.4) - 0.055)
+
+
+def load_photo(path: Path, raw_linear: bool = True) -> tuple[np.ndarray, str, dict]:
+    """Return (linear RGBA float32, colourspace name for the plugin, metadata)."""
+    meta: dict = {}
+    if path.suffix.lower() in RAW_SUFFIXES:
+        rgb = load_raw(path)
+        # dcraw -4 gives linear scene data with sRGB/Rec.709 primaries.
+        return rgb, "Linear Rec.709", meta
+
+    im = Image.open(path)
+    meta["exif"] = im.info.get("exif")
+    meta["icc"] = im.info.get("icc_profile")
+    im = apply_orientation(im)
+    if im.mode not in ("RGB", "RGBA", "L", "I;16", "I"):
+        im = im.convert("RGB")
+    a = np.asarray(im)
+    if a.dtype == np.uint8:
+        a = a.astype(np.float32) / 255.0
+    elif a.dtype == np.uint16:
+        a = a.astype(np.float32) / 65535.0
+    else:
+        a = a.astype(np.float32)
+        if a.max() > 1.0:
+            a /= a.max()
+    if a.ndim == 2:
+        a = np.stack([a] * 3, -1)
+    if a.shape[2] == 4:
+        a = a[..., :3]
+    return srgb_to_linear(a).astype(np.float32), "Linear Rec.709", meta
+
+
+def apply_orientation(im: "Image.Image") -> "Image.Image":
+    try:
+        from PIL import ImageOps
+
+        return ImageOps.exif_transpose(im)
+    except Exception:
+        return im
+
+
+def load_raw(path: Path) -> np.ndarray:
+    """Decode a camera raw file to linear RGB via dcraw_emu (libraw-bin)."""
+    exe = shutil.which("dcraw_emu") or shutil.which("dcraw")
+    if not exe:
+        sys.exit(
+            f"spektra: {path.name} is a camera raw file and needs a decoder.\n"
+            "Install it with:  sudo apt install libraw-bin"
+        )
+    with tempfile.TemporaryDirectory() as td:
+        work = Path(td) / path.name
+        shutil.copy2(path, work)
+        # -4 linear 16-bit, -T TIFF, -o 1 sRGB primaries, -w camera white balance
+        cmd = [exe, "-4", "-T", "-o", "1", "-w", str(work)]
+        r = subprocess.run(cmd, capture_output=True)
+        if r.returncode != 0:
+            sys.exit(f"spektra: raw decode failed for {path.name}:\n{r.stderr.decode()[:400]}")
+        tiffs = list(Path(td).glob("*.tiff")) + list(Path(td).glob("*.tif"))
+        if not tiffs:
+            sys.exit(f"spektra: raw decoder produced no output for {path.name}")
+        a = np.asarray(Image.open(tiffs[0])).astype(np.float32) / 65535.0
+    if a.ndim == 2:
+        a = np.stack([a] * 3, -1)
+    return a[..., :3]
+
+
+def save_photo(path: Path, linear_rgb: np.ndarray, bit_depth: int, quality: int,
+               meta: dict) -> None:
+    srgb = linear_to_srgb(linear_rgb[..., :3])
+    ext = path.suffix.lower()
+    if bit_depth == 16 and ext in (".tif", ".tiff", ".png"):
+        arr = np.clip(srgb * 65535.0 + 0.5, 0, 65535).astype(np.uint16)
+        Image.fromarray(arr, mode="RGB" if arr.shape[2] == 3 else "RGBA").save(path)
+        return
+    arr = np.clip(srgb * 255.0 + 0.5, 0, 255).astype(np.uint8)
+    im = Image.fromarray(arr)
+    kw: dict = {}
+    if ext in (".jpg", ".jpeg"):
+        kw.update(quality=quality, subsampling=0)
+        if meta.get("exif"):
+            kw["exif"] = meta["exif"]
+    im.save(path, **kw)
+
+
+# ------------------------------------------------------------ the render call
+
+
+class Renderer:
+    def __init__(self, renderer: Path, bundle: Path):
+        self.renderer, self.bundle = renderer, bundle
+        self._params: list[dict] | None = None
+
+    def describe(self, sets: list[tuple[str, str]] | None = None) -> list[dict]:
+        cmd = [str(self.renderer), "--bundle", str(self.bundle), "--list-params"]
+        for k, v in sets or []:
+            cmd += ["--set", f"{k}={v}"]
+        r = subprocess.run(cmd, capture_output=True)
+        if r.returncode != 0:
+            sys.exit(f"spektra: {r.stderr.decode().strip()}")
+        return json.loads(r.stdout)
+
+    @property
+    def params(self) -> list[dict]:
+        if self._params is None:
+            self._params = self.describe()
+        return self._params
+
+    def by_name(self, sets=None) -> dict[str, dict]:
+        return {p["name"]: p for p in (self.describe(sets) if sets else self.params)}
+
+    def render(self, linear_rgb: np.ndarray, sets: list[tuple[str, str]]) -> np.ndarray:
+        h, w = linear_rgb.shape[:2]
+        rgba = np.ones((h, w, 4), np.float32)
+        rgba[..., :3] = linear_rgb[..., :3]
+        with tempfile.TemporaryDirectory() as td:
+            src, dst = Path(td) / "in.sfraw", Path(td) / "out.sfraw"
+            sfraw_write(src, rgba)
+            cmd = [str(self.renderer), "--bundle", str(self.bundle)]
+            for k, v in sets:
+                cmd += ["--set", f"{k}={v}"]
+            cmd += ["--in", str(src), "--out", str(dst)]
+            r = subprocess.run(cmd, capture_output=True)
+            if r.returncode != 0:
+                sys.exit(f"spektra: {r.stderr.decode().strip()}")
+            return sfraw_read(dst)
+
+
+# ---------------------------------------------------------------- preset logic
+
+
+def norm(s: str) -> str:
+    return "".join(ch for ch in s.lower() if ch.isalnum())
+
+
+def resolve_preset(rend: Renderer, wanted: str) -> list[tuple[str, str]]:
+    """Find a bundled preset by name, across every category."""
+    cats = rend.by_name()[P_CATEGORY]["choices"]
+    everything: list[tuple[str, str]] = []
+    for cat in cats:
+        for name in rend.by_name([(P_CATEGORY, cat)])[P_SELECTION]["choices"]:
+            everything.append((cat, name))
+
+    for cat, name in everything:
+        if norm(name) == norm(wanted):
+            return [(P_CATEGORY, cat), (P_SELECTION, name)]
+
+    names = [n for _, n in everything]
+    close = difflib.get_close_matches(wanted, names, n=5, cutoff=0.4)
+    hint = "\n  ".join(close) if close else "\n  ".join(names[:12])
+    sys.exit(f"spektra: no preset called {wanted!r}. Did you mean:\n  {hint}")
+
+
+def list_presets(rend: Renderer) -> None:
+    for cat in rend.by_name()[P_CATEGORY]["choices"]:
+        names = rend.by_name([(P_CATEGORY, cat)])[P_SELECTION]["choices"]
+        print(f"\n{cat}  ({len(names)})")
+        for n in names:
+            print(f"  {n}")
+    user = rend.by_name()[P_USER_PRESET]["choices"]
+    if user and user != ["No presets found"]:
+        print(f"\nYour saved presets  ({len(user)})")
+        for n in user:
+            print(f"  {n}")
+
+
+# ----------------------------------------------------------------------- main
+
+
+def build_sets(args, rend: Renderer, cs_default: str) -> list[tuple[str, str]]:
+    sets: list[tuple[str, str]] = []
+    if args.preset:
+        sets += resolve_preset(rend, args.preset)
+    if args.user_preset:
+        sets += [(P_USER_PRESET, args.user_preset), (P_LOAD, "")]
+    # After a preset, so an explicit choice always wins.
+    sets.append((P_INPUT_CS, args.input_colorspace or cs_default))
+    for kv in args.set or []:
+        if "=" not in kv:
+            sys.exit(f"spektra: --set wants NAME=VALUE, got {kv!r}")
+        k, v = kv.split("=", 1)
+        sets.append((k, v))
+    if args.save_preset:
+        sets += [(P_PRESET_NAME, args.save_preset), (P_SAVE, "")]
+    return sets
+
+
+def process_one(rend: Renderer, src: Path, dst: Path, args) -> str:
+    linear, cs, meta = load_photo(src)
+    sets = build_sets(args, rend, cs)
+    out = rend.render(linear, sets)
+    save_photo(dst, out, args.bit_depth, args.quality, meta)
+    return f"{src.name} -> {dst}"
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(
+        prog="spektra",
+        description="Apply an OFX film-emulation plugin to photographs.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""examples:
+  spektra photo.jpg out.jpg --preset "Marty - Warm"
+  spektra photo.NEF out.tif --preset "CineStill 800T" --bit-depth 16
+  spektra photo.jpg out.jpg --set exposure=0.3
+  spektra --list-presets
+  spektra --list-params --grep grain
+  spektra shots/*.NEF outdir/ --preset "Vintage Faded"
+""",
+    )
+    ap.add_argument("inputs", nargs="*", type=Path)
+    ap.add_argument("output", nargs="?", type=Path)
+    ap.add_argument("--bundle", help="path to the .ofx.bundle")
+    ap.add_argument("--preset", help="a bundled preset, by name")
+    ap.add_argument("--user-preset", help="one of your own saved presets")
+    ap.add_argument("--save-preset", metavar="NAME",
+                    help="save these settings as a preset of your own")
+    ap.add_argument("--set", action="append", metavar="NAME=VALUE",
+                    help="set any plugin parameter (repeatable)")
+    ap.add_argument("--input-colorspace", help="override the input colourspace")
+    ap.add_argument("--bit-depth", type=int, default=8, choices=(8, 16))
+    ap.add_argument("--quality", type=int, default=95, help="JPEG quality")
+    ap.add_argument("--jobs", type=int, default=1, help="parallel images")
+    ap.add_argument("--list-presets", action="store_true")
+    ap.add_argument("--list-params", action="store_true")
+    ap.add_argument("--grep", metavar="TEXT", help="filter --list-params")
+    args = ap.parse_args()
+
+    rend = Renderer(find_renderer(), find_bundle(args.bundle))
+
+    if args.list_presets:
+        list_presets(rend)
+        return
+
+    if args.list_params:
+        for p in rend.params:
+            blob = f"{p['name']} {p['label']} {p.get('hint','')}"
+            if args.grep and args.grep.lower() not in blob.lower():
+                continue
+            kind = p["type"].replace("OfxParamType", "")
+            print(f"{p['name']:34} {kind:11} {p['label']}")
+            if p.get("choices"):
+                print(f"{'':34} options: {', '.join(p['choices'][:8])}"
+                      + (f" ... (+{len(p['choices'])-8})" if len(p["choices"]) > 8 else ""))
+            elif kind == "Boolean":
+                print(f"{'':34} on/off, now {'on' if p['value'][0] else 'off'}")
+            elif kind in ("Group", "PushButton"):
+                pass
+            elif "min" in p:
+                print(f"{'':34} range {p['min']} .. {p['max']}   now {p['value']}")
+        return
+
+    # Positional handling: the last path is the destination.
+    paths = list(args.inputs) + ([args.output] if args.output else [])
+    if len(paths) < 2:
+        ap.error("need an input and an output")
+    *sources, target = paths
+
+    if len(sources) > 1 or target.is_dir():
+        target.mkdir(parents=True, exist_ok=True)
+        jobs = [(s, target / (s.stem + "_spektra" + (s.suffix if s.suffix.lower()
+                not in RAW_SUFFIXES else ".jpg"))) for s in sources]
+    else:
+        jobs = [(sources[0], target)]
+
+    if args.jobs > 1 and len(jobs) > 1:
+        with ThreadPoolExecutor(max_workers=args.jobs) as ex:
+            for line in ex.map(lambda j: process_one(rend, j[0], j[1], args), jobs):
+                print(line)
+    else:
+        for s, d in jobs:
+            print(process_one(rend, s, d, args))
+
+
+if __name__ == "__main__":
+    main()
