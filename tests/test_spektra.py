@@ -486,6 +486,16 @@ def test_gui_model(h: Harness):
 
     check("panel builds quick controls", len(w.widgets) > 0, f"{len(w.widgets)} controls")
 
+    # A compositor matches a window to its .desktop file by app id.  Without
+    # these the shell shows a generic icon however well the real one is
+    # installed, which is exactly what happened.
+    gui.install_identity(app)
+    check("the app declares its desktop file", app.desktopFileName() == "ofx-photo",
+          app.desktopFileName())
+    check("the app declares its WM class", app.applicationName() == "ofx-photo",
+          app.applicationName())
+    check("a window icon is set", not app.windowIcon().isNull())
+
     from PyQt5.QtWidgets import QToolButton
 
     titles = [h.text().rsplit("  (", 1)[0]

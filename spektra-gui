@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 from PyQt5.QtCore import (QEvent, QObject, QSettings, QSize, Qt, QThread,
                           pyqtSignal)
-from PyQt5.QtGui import QColor, QImage, QPalette, QPixmap
+from PyQt5.QtGui import QColor, QIcon, QImage, QPalette, QPixmap
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
     QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton,
@@ -1074,9 +1074,37 @@ class Window(QMainWindow):
         super().closeEvent(e)
 
 
+APP_ID = "ofx-photo"
+
+
+def install_identity(app):
+    """Tell the desktop which application this window belongs to.
+
+    A compositor matches a window to its .desktop file by app id, and Qt
+    defaults that to the executable name.  Without this the shell looks for
+    spektra-gui.desktop, finds nothing, and shows a generic icon however well
+    the real one is installed.
+    """
+    app.setApplicationName(APP_ID)          # X11 WM_CLASS
+    app.setApplicationDisplayName("Spektra")
+    app.setDesktopFileName(APP_ID)          # Wayland app id
+
+    icon = QIcon.fromTheme(APP_ID)
+    if icon.isNull():
+        # Not installed: fall back to the copies in the checkout.
+        for candidate in (HERE / "desktop" / "ofx-photo.svg",
+                          HERE.parent / "desktop" / "ofx-photo.svg"):
+            if candidate.is_file():
+                icon = QIcon(str(candidate))
+                break
+    if not icon.isNull():
+        app.setWindowIcon(icon)
+
+
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    install_identity(app)
     rend = cli.Renderer(cli.find_renderer(), cli.find_bundle(None))
     win = Window(rend)
     if len(sys.argv) > 1:
