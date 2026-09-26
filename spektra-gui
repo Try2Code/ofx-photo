@@ -36,6 +36,11 @@ PREVIEW_EDGE = 1100
 DEFAULT_GROUPS = ("quickAccessGroup", "colorGroup", "filmGroup", "printGroup",
                   "grainGroup")
 
+# Groups pushed to the end of the panel, whatever order the plugin declares
+# them in.  Effects is a long list of optional extras, so the film controls
+# come first.
+LAST_GROUPS = ("effectsGroup",)
+
 # Parameters the pipeline owns.  Input and output colourspaces are set from the
 # session, and Output Role would switch the plugin to an HDR transfer that the
 # 8- and 16-bit writers cannot represent, so it would silently produce a wrong
@@ -460,6 +465,7 @@ class Window(QMainWindow):
         self.cb_user.currentTextChanged.connect(self.on_preset_change)
         self.cb_input.currentTextChanged.connect(self.on_change)
         self.rebuild_params()
+        self.update_evbias_state()
 
     def _load_choices(self):
         p = self.rend.by_name()
@@ -524,7 +530,9 @@ class Window(QMainWindow):
                 continue
             sections.setdefault(p.get("parent") or "", []).append(p)
 
-        for parent, items in sections.items():
+        ordered = ([(k, v) for k, v in sections.items() if k not in LAST_GROUPS]
+                   + [(k, v) for k, v in sections.items() if k in LAST_GROUPS])
+        for parent, items in ordered:
             title = groups.get(parent, parent or "General")
             head = QToolButton()
             head.setText(title)
@@ -828,6 +836,7 @@ class Window(QMainWindow):
             self.statusBar().clearMessage()
             return
         self.source_path, self.raw_linear, self.meta = path, linear, meta
+        self.update_evbias_state()
         self.rebuild_source()
         h, w = linear.shape[:2]
         self.lbl_file.setText(f"{path.name}   {w}×{h}")
@@ -852,6 +861,26 @@ class Window(QMainWindow):
         before the plugin sees it, so the preview has to be rebuilt."""
         self.rebuild_source()
         self.on_change()
+
+    def update_evbias_state(self):
+        """Grey the box out when it cannot do anything, and say why."""
+        is_raw = bool(self.meta.get("is_raw"))
+        bias = self.meta.get("exposure_bias")
+        usable = is_raw and bool(bias)
+        self.chk_evbias.setEnabled(usable)
+        if not self.source_path:
+            why = "Open a raw file to use this."
+        elif not is_raw:
+            why = ("Raw files only. A JPEG already carries the camera's exposure\n"
+                   "compensation in its rendering, so undoing it would apply it twice.")
+        elif not bias:
+            why = "This raw file records no exposure compensation."
+        else:
+            why = (f"Undo the {bias:+.2f} EV the camera was told to apply, so this raw\n"
+                   f"lands where its JPEG would (x{2.0 ** -float(bias):.2f}).")
+        self.chk_evbias.setToolTip(why)
+        self.chk_evbias.setText("EV bias" if usable or not self.source_path
+                                else "EV bias (raw only)")
 
     def rebuild_source(self):
         if self.raw_linear is None:

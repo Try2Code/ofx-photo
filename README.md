@@ -98,7 +98,7 @@ and the tools will find it in `/usr/OFX/Plugins`, `~/OFX/Plugins`, anywhere on
 | **Save preset… / Reset** | store the current look; drop your edits |
 | **Pin seed** | fix every random seed so renders repeat exactly |
 | **Export / Import session** | the whole window state as JSON |
-| **EV bias** | undo the camera's exposure compensation (raw only) |
+| **EV bias** | undo the camera's exposure compensation; **raw only**, and greyed out with the reason for anything else |
 | **Diffuse pass / Lens pass** | extra passes through the companion plugins |
 | **Show every parameter** | all 830, grouped and collapsed |
 | **Render full resolution** | the preview is downscaled; this is the real thing |
@@ -108,7 +108,8 @@ to whatever the preset said. The button greys out when the value is already ther
 can see at a glance what you have changed.
 
 Groups fold. **Quick Access, Color Management, Film, Print** and **Grain** are open by
-default — 61 controls; the remaining ~800 are one tick box away.
+default — 61 controls; the remaining ~800 are one tick box away. **Effects** sits at the
+bottom, being a long list of optional extras.
 
 ## The command line
 
@@ -294,7 +295,7 @@ twice.
 ./tests/test_spektra.py --quick -k session              # narrow it down
 ```
 
-82 checks across the host, presets, determinism, parameter overrides, sessions, output
+86 checks across the host, presets, determinism, parameter overrides, sessions, output
 encoding, chained passes, exposure bias, image I/O, raw scaling, ICC handling and the GUI
 model. **The GUI runs offscreen**, so the whole suite needs no display and no clicking.
 

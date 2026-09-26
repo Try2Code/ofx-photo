@@ -418,6 +418,8 @@ def test_gui_model(h: Harness):
     for wanted in ("Quick Access", "Color Management", "Film", "Print", "Grain"):
         check(f"{wanted!r} shown by default", wanted in titles)
     check("Normalize W/B is reachable by default", "rcmFullRange" in w.widgets)
+    check("Effects sits at the bottom", titles[-1] == "Effects",
+          " -> ".join(titles))
     check("Output Role is withheld, the writers cannot do HDR",
           "outputRole" not in w.widgets)
 
@@ -455,6 +457,21 @@ def test_gui_model(h: Harness):
     w.chk_evbias.setChecked(True)
     check("the EV bias box reaches the session", w.session()["raw_exposure_bias"])
     w.chk_evbias.setChecked(False)
+
+    # The box only does anything for raw, so it should say so rather than
+    # looking available and doing nothing.
+    w.meta = {"is_raw": False, "exposure_bias": -1.0}
+    w.source_path = h.photo
+    w.update_evbias_state()
+    check("EV bias is disabled for non-raw", not w.chk_evbias.isEnabled(),
+          w.chk_evbias.text())
+    w.meta = {"is_raw": True, "exposure_bias": -1.0}
+    w.update_evbias_state()
+    check("EV bias is available for raw with a bias", w.chk_evbias.isEnabled())
+    w.meta = {"is_raw": True, "exposure_bias": 0.0}
+    w.update_evbias_state()
+    check("EV bias is disabled when no bias was dialled in",
+          not w.chk_evbias.isEnabled())
     check("the armed pass reaches the session",
           any(c.get("bundle") == "lens" for c in w.session().get("chain", [])))
     w.cb_vignette.setCurrentText("Off")
