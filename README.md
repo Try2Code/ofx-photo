@@ -118,15 +118,39 @@ Each is tried directly and with a `Plugins/` subdirectory. Check which one won w
 ## The GUI
 
 ```sh
-./spektra-gui                 # empty, then Open…
-./spektra-gui photo.NEF       # straight to a photo
-./spektra-gui look.json       # straight to a saved session
+./spektra-gui                       # empty, then Open…
+./spektra-gui photo.NEF             # straight to a photo
+./spektra-gui a.jpg b.jpg c.jpg     # one window each
+./spektra-gui look.json             # straight to a saved session
+```
+
+### From a photo catalog
+
+Taking several paths means a catalog can hand over a whole selection.
+[npc](https://github.com/Try2Code) drives it from its config with no glue code:
+
+```toml
+[[action]]
+key  = "s"
+name = "Spektra (JPG)"
+cmd  = ["spektra-gui", "{jpg}"]
+mode = "detach"
+
+[[action]]
+key  = "S"
+name = "Spektra (RAW)"
+cmd  = ["spektra-gui", "{raw}"]
+mode = "detach"
+
+[[export]]
+name = "portra"
+cmd  = ["spektra", "{src}", "{dst}", "--preset", "Marty - Warm", "--raw-ev-bias"]
 ```
 
 | Control | What it does |
 |---|---|
 | ☀ / ☾ (far left) | dark or light theme, remembered between runs |
-| **Open…** | JPEG, PNG, TIFF, and raw; drag and drop works |
+| **Open…** | JPEG, PNG, TIFF, and raw; drop a file on the window, or pass paths on the command line |
 | **Hold to compare** | press and hold to see the untouched original |
 | **Category / Preset** | the 88 bundled presets |
 | **Yours** | presets you saved, from `~/Documents/spektrafilm/presets` |

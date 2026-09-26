@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -1143,12 +1144,20 @@ def main():
     install_identity(app)
     rend = cli.Renderer(cli.find_renderer(), cli.find_bundle(None))
     win = Window(rend)
-    if len(sys.argv) > 1:
-        arg = Path(sys.argv[1])
-        if arg.suffix.lower() == ".json":
-            win.apply_session(cli.load_session(str(arg)))
+
+    # A catalog hands over a whole selection, so take more than one path: the
+    # first opens here and the rest get their own window.  Anything else would
+    # silently drop all but the first.
+    args = [Path(a) for a in sys.argv[1:] if not a.startswith("-")]
+    for extra in args[1:]:
+        subprocess.Popen([sys.executable, str(Path(__file__).resolve()), str(extra)],
+                         start_new_session=True)
+    if args:
+        first = args[0]
+        if first.suffix.lower() == ".json":
+            win.apply_session(cli.load_session(str(first)))
         else:
-            win.load_path(arg)
+            win.load_path(first)
     win.show()
     sys.exit(app.exec_())
 
