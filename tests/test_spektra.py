@@ -629,6 +629,138 @@ def test_gui_model(h: Harness):
           "mean diff %.5f" % float(np.abs(gui_px - out).mean()))
 
 
+# ------------------------------------------------- checks that need no plugin
+#
+# The plugin cannot live in the repository, so CI has no bundle to load.  These
+# exercise everything around it: colour, file formats, sessions, and that the
+# host binary was built and fails intelligibly when there is nothing to load.
+
+
+def test_colour_maths():
+    x = np.linspace(0, 1, 1024, dtype=np.float32)
+    back = cli.linear_to_srgb(cli.srgb_to_linear(x))
+    check("sRGB transfer round-trips", float(np.abs(back - x).max()) < 1e-5,
+          "max error %.2e" % float(np.abs(back - x).max()))
+    # The two anchors everyone checks a transfer against.
+    check("sRGB 0.5 decodes near 0.214",
+          abs(float(cli.srgb_to_linear(np.float32(0.5))) - 0.2140) < 1e-3)
+    check("black and white are fixed points",
+          float(cli.srgb_to_linear(np.float32(0.0))) == 0.0
+          and abs(float(cli.linear_to_srgb(np.float32(1.0))) - 1.0) < 1e-6)
+
+
+def test_sfraw_roundtrip():
+    import struct
+    a = np.random.default_rng(0).random((17, 23, 4)).astype(np.float32)
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "t.sfraw"
+        with open(p, "wb") as f:
+            h, w, c = a.shape
+            f.write(b"SFRW")
+            f.write(struct.pack("<III", w, h, c))
+            f.write(np.ascontiguousarray(a[::-1], dtype="<f4").tobytes())
+        with open(p, "rb") as f:
+            assert f.read(4) == b"SFRW"
+            w, h, c = struct.unpack("<III", f.read(12))
+            back = np.frombuffer(f.read(w * h * c * 4), dtype="<f4").reshape(h, w, c)[::-1]
+    check("sfraw survives a round trip", np.array_equal(a, back), f"{a.shape}")
+
+
+def test_resize():
+    a = np.zeros((200, 400, 3), np.float32)
+    a[..., 0] = np.linspace(0, 1, 400)[None, :]
+    small = cli.resize_linear(a, 100)
+    check("resize honours the long edge", small.shape[:2] == (50, 100), str(small.shape))
+    check("resize keeps the value range",
+          0.0 <= float(small.min()) and float(small.max()) <= 1.0)
+    check("resize leaves a small image alone", cli.resize_linear(a, 4000) is a)
+
+
+def test_session_model():
+    s = cli.default_session()
+    check("a default session has the expected keys",
+          {"preset", "params", "seed", "chain", "output_colorspace"} <= set(s))
+    merged = cli.load_session('{"seed": 3, "preset": {"selection": "X"}}')
+    check("loading merges into the defaults",
+          merged["seed"] == 3 and merged["preset"]["selection"] == "X"
+          and "category" in merged["preset"])
+    sets = dict(cli.session_to_sets(cli.default_session() | {"seed": 11}))
+    check("a seed expands to every seed parameter",
+          all(n in sets for n in cli.SEED_PARAMS), f"{len(cli.SEED_PARAMS)} parameters")
+    check("the same seed always expands the same way",
+          cli.seed_sets(11) == cli.seed_sets(11) and cli.seed_sets(11) != cli.seed_sets(12))
+    for bad in ("{not json", "[]", '{"version": 999}'):
+        try:
+            cli.load_session(bad)
+            check(f"rejects {bad!r}", False)
+        except SystemExit:
+            check(f"rejects {bad!r}", True)
+
+
+def test_image_formats():
+    from PIL import Image
+    a = np.zeros((32, 64, 3), np.float32)
+    a[..., 1] = np.linspace(0, 1, 64)[None, :]
+    with tempfile.TemporaryDirectory() as td:
+        for ext, depth in ((".jpg", 8), (".png", 8), (".png", 16), (".tif", 16)):
+            p = Path(td) / f"o{depth}{ext}"
+            cli.save_photo(p, a, depth, 92, {})
+            check(f"writes {ext} at {depth}-bit", p.exists() and p.stat().st_size > 0)
+        deep = Path(td) / "d.png"
+        cli.save_photo(deep, a, 16, 92, {})
+        head = deep.read_bytes()[:26]
+        if __import__("shutil").which("convert"):
+            check("16-bit PNG really has 16-bit samples",
+                  head[24] == 16 and head[25] == 2, f"depth {head[24]}")
+        else:
+            results.append(("skip", "16-bit PNG", "no ImageMagick"))
+            print("  skip 16-bit PNG   (no ImageMagick)")
+
+        # and read one back in
+        src = Path(td) / "in.png"
+        Image.fromarray((cli.linear_to_srgb(a) * 255 + 0.5).astype(np.uint8)).save(src)
+        lin, cs, meta = cli.load_photo(src)
+        check("reads a PNG back as linear", lin.shape == a.shape and "Linear" in cs,
+              f"{lin.shape} {cs}")
+        check("metadata describes it", "decoded" in cli.describe_image(src))
+
+
+def test_exposure_bias_maths():
+    a = np.full((4, 4, 3), 0.1, np.float32)
+    out, note = cli.apply_exposure_bias(a, {"is_raw": True, "exposure_bias": -1.0})
+    check("a -1 EV bias doubles the raw", abs(float(out.mean()) - 0.2) < 1e-5, note)
+    out, note = cli.apply_exposure_bias(a, {"is_raw": True, "exposure_bias": 1.0})
+    check("a +1 EV bias halves it", abs(float(out.mean()) - 0.05) < 1e-5, note)
+    out, _ = cli.apply_exposure_bias(a, {"is_raw": False, "exposure_bias": -1.0})
+    check("a non-raw file is untouched", out is a)
+    out, _ = cli.apply_exposure_bias(a, {"is_raw": True, "exposure_bias": None})
+    check("no recorded bias means no change", out is a)
+
+
+def test_host_binary():
+    import subprocess as sp
+    exe = cli.find_renderer()
+    check("the host binary was built", exe.exists(), str(exe))
+    r = sp.run([str(exe), "--help"], capture_output=True, text=True)
+    check("it prints usage", r.returncode == 0 and "spektra-render" in r.stdout)
+    r = sp.run([str(exe), "--bundle", "/nonexistent.ofx.bundle", "--list-plugins"],
+               capture_output=True, text=True)
+    check("it fails intelligibly on a missing bundle",
+          r.returncode != 0 and "spektra-render:" in r.stderr,
+          r.stderr.strip()[:60])
+    r = sp.run([str(exe)], capture_output=True, text=True)
+    check("it asks for a bundle when given none",
+          r.returncode == 2 and "--bundle" in r.stderr)
+
+
+def test_cli_entry():
+    import subprocess as sp
+    r = sp.run([sys.executable, str(ROOT / "spektra"), "--help"],
+               capture_output=True, text=True)
+    check("the CLI prints usage", r.returncode == 0 and "--session" in r.stdout)
+    check("the examples mention the companion passes", "--chain" in r.stdout)
+
+
 # ------------------------------------------------------------------------ main
 
 
@@ -649,8 +781,13 @@ def main():
         synthetic_photo(photo)
     print(f"photo:  {photo}")
 
-    h = Harness(photo, args.bundle)
-    print(f"bundle: {h.rend.bundle}\n")
+    try:
+        h = Harness(photo, args.bundle)
+        print(f"bundle: {h.rend.bundle}\n")
+    except SystemExit as e:
+        h = None
+        print(f"bundle: not found - {e}\n"
+              f"        running only the checks that need no plugin\n")
 
     presets = [("Creative", "Chromium-Noir"), ("Creative", "Marty - Warm")]
     spaces = ["Linear Rec.709", "sRGB"]
@@ -658,6 +795,17 @@ def main():
         presets += [("Creative", "OIL!"), ("Creative", "Vintage Faded"),
                     ("Clean Slate", "Clean Slate")]
         spaces += ["ACEScg"]
+
+    offline = [
+        ("colour", test_colour_maths),
+        ("sfraw", test_sfraw_roundtrip),
+        ("resize", test_resize),
+        ("session-model", test_session_model),
+        ("formats", test_image_formats),
+        ("bias-maths", test_exposure_bias_maths),
+        ("binary", test_host_binary),
+        ("cli", test_cli_entry),
+    ]
 
     suite = [
         ("host", lambda: test_host_loads(h)),
@@ -680,7 +828,7 @@ def main():
         ("gui", lambda: test_gui_model(h)),
     ]
 
-    for name, fn in suite:
+    for name, fn in offline + (suite if h else []):
         if args.k and args.k.lower() not in name.lower():
             continue
         print(f"{name}:")

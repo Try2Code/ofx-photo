@@ -543,10 +543,13 @@ def load_session(spec: str) -> dict:
     """Accept a path, a literal JSON string, or - for stdin."""
     if spec == "-":
         text = sys.stdin.read()
-    elif spec.lstrip().startswith("{"):
+    elif spec.lstrip()[:1] in "{[":
         text = spec
     else:
-        text = Path(spec).expanduser().read_text()
+        try:
+            text = Path(spec).expanduser().read_text()
+        except OSError as e:
+            sys.exit(f"spektra: cannot read session {spec!r}: {e.strerror}")
     try:
         raw = json.loads(text)
     except json.JSONDecodeError as e:

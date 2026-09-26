@@ -3,10 +3,12 @@
 A minimal [OpenFX](https://openeffects.org/) host for applying OFX plugins to **still
 photographs** on Linux, with a command line tool and a small GUI on top.
 
-Written to run the [spektrafilm](https://spektrafilm.114c.de/) film-emulation plugin,
-where the vendor ships the plugin for Linux but the standalone photo application is macOS
-only, and the documented hosts — DaVinci Resolve Studio and Nuke — are expensive video
-tools that are awkward for single images.
+Written to run **spektrafilm**, a film-emulation plugin by Aedan Diez
+([site](https://spektrafilm.114c.de/) · [source](https://github.com/andreavolpato/spektrafilm)
+· [downloads](https://spektrafilm.114c.de/#download)). The vendor ships that plugin for
+Linux, but the standalone photo application is macOS only, and the documented hosts —
+DaVinci Resolve Studio and Nuke — are expensive video tools that are awkward for single
+images. This project is the missing host, not a fork of the plugin.
 
 ```sh
 cmake -S . -B build && cmake --build build     # build the host
@@ -335,6 +337,24 @@ model. **The GUI runs offscreen**, so the whole suite needs no display and no cl
 They earn their keep: the first run found 16-bit output silently writing 8-bit, and
 sessions silently dropping 806 of 830 parameters.
 
+### On GitHub
+
+`.github/workflows/ci.yml` runs on every push in two stages:
+
+- **quick** — builds the host, byte-compiles the Python, runs the ~30 checks that need no
+  plugin, and installs the desktop entry through `desktop-file-validate`.
+- **full** — downloads the official Linux archive from the vendor's site, installs it, and
+  runs everything.
+
+The runners have no GPU, so rendering falls to **lavapipe**, Mesa's software Vulkan. That
+works: the plugin enumerates it like any other device. Compiling its 79 shader pipelines
+costs about 25 s the first time and roughly 4 s a render afterwards, so both the 110 MB
+archive and `~/.cache/spektrafilm` are cached between runs. Bump `PLUGIN_VERSION` in the
+workflow to pick up a newer plugin.
+
+The archive is fetched for use and never committed or republished; nothing about the
+plugin enters this repository.
+
 ## How it works
 
 ```
@@ -408,6 +428,20 @@ Both paths go through PPM and ImageMagick instead. Worth remembering if you exte
 - [ ] OpenEXR and HDR output
 - [ ] Render only the visible crop when zoomed in
 - [ ] Batch progress and resumable runs
+
+## Credits and links
+
+| | |
+|---|---|
+| **spektrafilm** — the plugin this hosts | [spektrafilm.114c.de](https://spektrafilm.114c.de/) |
+| its source, GPL-3.0, by Aedan Diez | [github.com/andreavolpato/spektrafilm](https://github.com/andreavolpato/spektrafilm) |
+| downloads, including the Linux build | [spektrafilm.114c.de/#download](https://spektrafilm.114c.de/#download) |
+| the plugin's own manual | `manual.pdf`, inside the bundle's `Contents/Resources` |
+| **OpenFX** — the API being implemented | [openeffects.org](https://openeffects.org/) · [github.com/AcademySoftwareFoundation/openfx](https://github.com/AcademySoftwareFoundation/openfx) |
+
+All the film science, the spectral data and the 88 presets are the plugin's work. This
+repository contributes only the host around it: the OFX suites, the render loop, the
+photo I/O, and the two front ends.
 
 ## Licence
 
