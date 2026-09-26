@@ -36,6 +36,10 @@ PREVIEW_EDGE = 1100
 DEFAULT_GROUPS = ("quickAccessGroup", "colorGroup", "filmGroup", "printGroup",
                   "grainGroup")
 
+# What may be dropped on the window: photographs, and saved sessions.
+SUPPORTED_SUFFIXES = ({".jpg", ".jpeg", ".png", ".tif", ".tiff", ".json"}
+                      | cli.RAW_SUFFIXES)
+
 # Groups pushed to the end of the panel, whatever order the plugin declares
 # them in.  Effects is a long list of optional extras, so the film controls
 # come first.
@@ -291,6 +295,7 @@ class Window(QMainWindow):
         self.syncing = False
 
         self.view = ImageView()
+        self.setAcceptDrops(True)
         self._build_ui()
         self._restore()
 
@@ -1052,6 +1057,37 @@ class Window(QMainWindow):
         self.extra_params.clear()
         self.sync_widgets()
         self.on_change()
+
+    # ---- drag and drop
+
+    @staticmethod
+    def _dropped_path(event) -> Path | None:
+        if not event.mimeData().hasUrls():
+            return None
+        for url in event.mimeData().urls():
+            if url.isLocalFile():
+                p = Path(url.toLocalFile())
+                if p.suffix.lower() in SUPPORTED_SUFFIXES:
+                    return p
+        return None
+
+    def dragEnterEvent(self, event):
+        if self._dropped_path(event):
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event):
+        if self._dropped_path(event):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        path = self._dropped_path(event)
+        if not path:
+            return
+        event.acceptProposedAction()
+        if path.suffix.lower() == ".json":
+            self.apply_session(cli.load_session(str(path)))
+        else:
+            self.load_path(path)
 
     def toggle_theme(self):
         self.set_theme("light" if self.theme == "dark" else "dark")
