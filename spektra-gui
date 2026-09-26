@@ -57,13 +57,13 @@ class WheelGuard(QObject):
 class RenderJob(QThread):
     done = pyqtSignal(object, str)
 
-    def __init__(self, rend, linear, sets):
+    def __init__(self, rend, linear, session):
         super().__init__()
-        self.rend, self.linear, self.sets = rend, linear, sets
+        self.rend, self.linear, self.session = rend, linear, session
 
     def run(self):
         try:
-            self.done.emit(self.rend.render(self.linear, self.sets), "")
+            self.done.emit(cli.render_pipeline(self.session, self.linear, self.rend), "")
         except SystemExit as e:
             self.done.emit(None, str(e))
         except Exception as e:  # noqa: BLE001 - surface anything to the status bar
@@ -226,6 +226,35 @@ class Window(QMainWindow):
         line.setFrameShape(QFrame.HLine)
         line.setStyleSheet("color:#333;")
         pv.addWidget(line)
+
+        # Extra passes.  The companion bundles are the same engine with
+        # different defaults, so a lens pass does nothing until one of its
+        # effects is switched on - hence the two dropdowns rather than a bare
+        # checkbox that would appear to do nothing.
+        passes = QFormLayout()
+        passes.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        self.chk_diffuse = QCheckBox("Diffuse pass")
+        self.chk_lens = QCheckBox("Lens pass")
+        self.cb_vignette = QComboBox()
+        self.cb_distort = QComboBox()
+        try:
+            lens = cli.renderer_for("lens").by_name()
+            self.cb_vignette.addItems(["Off"] + lens["quickVignettePreset"]["choices"])
+            self.cb_distort.addItems(["Off"] + lens["quickLensDistortionPreset"]["choices"])
+        except SystemExit:
+            self.chk_lens.setEnabled(False)
+            self.chk_diffuse.setEnabled(False)
+        for wdg in (self.chk_diffuse, self.chk_lens):
+            wdg.toggled.connect(self.on_change)
+        for wdg in (self.cb_vignette, self.cb_distort):
+            wdg.currentIndexChanged.connect(self.on_change)
+            wdg.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            wdg.setMinimumContentsLength(12)
+        passes.addRow(self.chk_diffuse, QLabel(""))
+        passes.addRow(self.chk_lens, QLabel(""))
+        passes.addRow("  Vignette", self.cb_vignette)
+        passes.addRow("  Distortion", self.cb_distort)
+        pv.addLayout(passes)
 
         allrow = QHBoxLayout()
         self.chk_all = QCheckBox("Show every parameter (830)")
@@ -449,6 +478,20 @@ class Window(QMainWindow):
         s["params"].update({n: self._value_str(n) for n in self.widgets if n in self.dirty})
         s["seed"] = int(self.sp_seed.value()) if self.chk_seed.isChecked() else None
         s["preview"] = {"long_edge": PREVIEW_EDGE} if for_preview else None
+
+        chain = []
+        if self.chk_diffuse.isChecked():
+            chain.append({"bundle": "diffuse", "params": {}})
+        if self.chk_lens.isChecked():
+            params = {}
+            if self.cb_vignette.currentText() != "Off":
+                params["quickVignetteEnabled"] = "true"
+                params["quickVignettePreset"] = self.cb_vignette.currentText()
+            if self.cb_distort.currentText() != "Off":
+                params["quickLensDistortionEnabled"] = "true"
+                params["quickLensDistortionPreset"] = self.cb_distort.currentText()
+            chain.append({"bundle": "lens", "params": params})
+        s["chain"] = chain
         return s
 
     def current_sets(self) -> list[tuple[str, str]]:
@@ -471,6 +514,22 @@ class Window(QMainWindow):
             self.chk_seed.setChecked(s.get("seed") is not None)
             if s.get("seed") is not None:
                 self.sp_seed.setValue(int(s["seed"]))
+
+            self.chk_diffuse.setChecked(False)
+            self.chk_lens.setChecked(False)
+            self.cb_vignette.setCurrentText("Off")
+            self.cb_distort.setCurrentText("Off")
+            for step in s.get("chain") or []:
+                b = str(step.get("bundle", "")).lower()
+                pr = step.get("params") or {}
+                if "diffuse" in b:
+                    self.chk_diffuse.setChecked(True)
+                elif "lens" in b:
+                    self.chk_lens.setChecked(True)
+                    if pr.get("quickVignettePreset"):
+                        self.cb_vignette.setCurrentText(pr["quickVignettePreset"])
+                    if pr.get("quickLensDistortionPreset"):
+                        self.cb_distort.setCurrentText(pr["quickLensDistortionPreset"])
         finally:
             self.syncing = False
 
@@ -608,7 +667,7 @@ class Window(QMainWindow):
             except OSError:
                 pass
         self.statusBar().showMessage("rendering preview…")
-        self.job = RenderJob(self.rend, self.preview_linear, self.current_sets())
+        self.job = RenderJob(self.rend, self.preview_linear, self.session())
         self.job.done.connect(self.on_rendered)
         self.job.start()
 
@@ -648,8 +707,8 @@ class Window(QMainWindow):
         self.statusBar().showMessage(f"rendering {w}×{h}…")
         QApplication.processEvents()
         try:
-            self.full_render = self.rend.render(
-                self.full_linear, cli.session_to_sets(self.session(for_preview=False)))
+            self.full_render = cli.render_pipeline(
+                self.session(for_preview=False), self.full_linear, self.rend)
         except SystemExit as e:
             QMessageBox.warning(self, "spektra", str(e))
             return

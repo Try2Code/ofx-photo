@@ -234,6 +234,60 @@ def test_raw_scaling(h: Harness, raw: Path | None):
     check("raw reports a linear colourspace", "Linear" in cs, cs)
 
 
+def test_chain(h: Harness):
+    """The companion bundles, run as extra passes over the first result."""
+    try:
+        cli.find_bundle("lens")
+        cli.find_bundle("diffuse")
+    except SystemExit:
+        results.append(("skip", "chain", "companion bundles not installed"))
+        print("  skip chain   (companion bundles not installed)")
+        return
+
+    base = h.session(preset={"category": "Creative", "selection": "Marty - Warm"})
+    plain = cli.render_pipeline(base, h.small, h.rend)
+
+    # diffuse ships with camera diffusion on, so it changes the image by itself
+    diff = cli.render_pipeline(dict(base, chain=[{"bundle": "diffuse", "params": {}}]),
+                               h.small, h.rend)
+    check("a diffuse pass changes the image", not np.array_equal(plain, diff),
+          "mean diff %.5f" % float(np.abs(plain - diff).mean()))
+
+    # lens is the same engine with every effect off, so a bare pass is a no-op
+    bare = cli.render_pipeline(dict(base, chain=[{"bundle": "lens", "params": {}}]),
+                               h.small, h.rend)
+    check("a bare lens pass is a no-op, as its defaults imply",
+          np.allclose(plain, bare, atol=2e-3),
+          "mean diff %.5f" % float(np.abs(plain - bare).mean()))
+
+    # with an effect switched on it must bite, and darken the corners
+    vign = cli.render_pipeline(
+        dict(base, chain=[{"bundle": "lens", "params": {
+            "quickVignetteEnabled": "true",
+            "quickVignettePreset": "Vintage Mechanical"}}]), h.small, h.rend)
+    check("a lens pass with vignette on changes the image",
+          not np.array_equal(plain, vign),
+          "mean diff %.5f" % float(np.abs(plain - vign).mean()))
+    corner_before = float(plain[:12, :12, :3].mean())
+    corner_after = float(vign[:12, :12, :3].mean())
+    check("vignette darkens the corners", corner_after < corner_before,
+          "%.4f -> %.4f" % (corner_before, corner_after))
+
+    # two passes stack
+    both = cli.render_pipeline(
+        dict(base, chain=[{"bundle": "diffuse", "params": {}},
+                          {"bundle": "lens", "params": {
+                              "quickVignetteEnabled": "true",
+                              "quickVignettePreset": "Vintage Mechanical"}}]),
+        h.small, h.rend)
+    check("two chained passes differ from either alone",
+          not np.array_equal(both, diff) and not np.array_equal(both, vign))
+
+    check("bundle aliases resolve",
+          cli.find_bundle("lens").name == "spektrafilm_lens.ofx.bundle",
+          cli.find_bundle("lens").name)
+
+
 def test_output_encoding(h: Harness):
     """The plugin returns display-encoded pixels, not linear ones.
 
@@ -403,6 +457,7 @@ def main():
         ("raw", lambda: test_raw_scaling(h, args.raw)),
         ("profiles", lambda: test_colour_profiles(h)),
         ("metadata", lambda: test_metadata(h)),
+        ("chain", lambda: test_chain(h)),
         ("encoding", lambda: test_output_encoding(h)),
         ("gui", lambda: test_gui_model(h)),
     ]

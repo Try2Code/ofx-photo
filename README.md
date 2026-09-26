@@ -94,7 +94,56 @@ cmake -S . -B build && cmake --build build      # build the host
 ./spektra photo.jpg out.jpg --set technicolorGrainAmount=1.7
 ./spektra shots/*.NEF outdir/ --preset "Vintage Faded" --jobs 2
 ./spektra-gui photo.jpg                         # the window
+./install-desktop.sh                            # menu entry and "Open With"
 ```
+
+### Desktop launcher
+
+`./install-desktop.sh` adds a **Spektra Photo** entry to the applications menu and to the
+*Open With* list for JPEG, PNG, TIFF and common raw formats. Everything is written under
+`$HOME`, so it needs no root and installs nothing system-wide; `--uninstall` removes it.
+
+To make it the default for a format:
+
+```sh
+xdg-mime default ofx-photo.desktop image/x-nikon-nef
+```
+
+### The companion plugins
+
+The family ships four bundles. They are **one engine with different defaults**, not four
+different effects, which is worth knowing before reaching for them:
+
+| Short name | Differs from `spektrafilm` by |
+|---|---|
+| `film` (default) | — |
+| `diffuse` | camera diffusion on, spatial scale 35 |
+| `lens` | only a Resolve-oriented default colourspace |
+| `flow` | motion based, of little use for stills |
+
+So `--bundle lens` on its own does nothing that the main plugin cannot; a **bare lens pass
+is a verified no-op**. What the companions add is the ability to run *more than one pass*,
+the way a node graph would:
+
+```sh
+./spektra photo.jpg out.jpg --preset "Marty - Warm" --chain diffuse
+./spektra photo.jpg out.jpg --bundle diffuse --preset "OIL!"
+```
+
+A pass only bites once its effects are switched on, which is easiest to express in a
+session:
+
+```json
+"chain": [
+  {"bundle": "lens",
+   "params": {"quickVignetteEnabled": "true",
+              "quickVignettePreset": "Vintage Mechanical"}}
+]
+```
+
+Each pass reads in whatever encoding the pass before it wrote. In the GUI there are
+**Diffuse pass** and **Lens pass** tick boxes, with vignette and distortion dropdowns,
+since a bare lens pass would otherwise look broken.
 
 A 2560×1709 JPEG takes roughly two seconds on integrated graphics.
 
@@ -129,14 +178,19 @@ tests/test_spektra.py --photo p.jpg --raw p.NEF         # your own files
 tests/test_spektra.py --quick -k session                # narrow it down
 ```
 
-50 checks across the host, presets, determinism, parameter overrides, sessions,
-colourspaces, image I/O, raw scaling, ICC handling and the GUI model. The GUI runs
-offscreen, so the whole suite needs no display and no clicking.
+59 checks across the host, presets, determinism, parameter overrides, sessions,
+colourspaces, output encoding, chained passes, image I/O, raw scaling, ICC handling and
+the GUI model. The GUI runs offscreen, so the whole suite needs no display and no
+clicking.
 
 Preset names are matched loosely and suggest alternatives when wrong, which helps: the
 real names are easy to mistype (`Chromium-Noir`, `CineStill 800T`, `Marty - Warm`).
 
 ## Notes
+
+**The plugin returns display-encoded pixels**, not linear ones. It applies its own output
+transform, so what comes back is already sRGB. Encoding it again lifts shadows by up to
+70 levels out of 255.
 
 **Renders vary between runs unless you pin the seed.** The plugin randomises its grain,
 gate weave, flicker and dust seeds for each new instance. `--seed N` fixes all of them
@@ -159,7 +213,8 @@ re-apply defaults over whatever preset was just loaded, which silently destroys 
 - [x] `spektra-gui` — preview, presets, dynamic parameter panel
 - [x] Session JSON shared by the CLI and the GUI, with reproducible seeds
 - [x] Automated tests that need no display
-- [ ] The `_diffuse` and `_lens` companion plugins
+- [x] The `_diffuse` and `_lens` companion plugins, as chained passes
+- [x] Desktop launcher and "Open With" integration
 - [ ] OpenEXR output
 
 ## Licence

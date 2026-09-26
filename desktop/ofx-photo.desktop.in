@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Spektra Photo
+GenericName=Film Emulation
+Comment=Apply OFX film-emulation plugins to photographs
+Exec=@EXEC@ %f
+Icon=@ICON@
+Terminal=false
+Categories=Graphics;Photography;2DGraphics;
+Keywords=photo;film;emulation;ofx;raw;grade;
+MimeType=image/jpeg;image/png;image/tiff;image/x-nikon-nef;image/x-canon-cr2;image/x-canon-cr3;image/x-sony-arw;image/x-adobe-dng;image/x-panasonic-rw2;image/x-olympus-orf;image/x-fuji-raf;
+StartupNotify=true
+StartupWMClass=spektra-gui

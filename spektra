@@ -54,27 +54,58 @@ def find_renderer() -> Path:
     sys.exit("spektra: spektra-render not built - run: cmake -S . -B build && cmake --build build")
 
 
-def find_bundle(explicit: str | None) -> Path:
-    if explicit:
-        p = Path(explicit).expanduser()
-        if not p.exists():
-            sys.exit(f"spektra: no such bundle: {p}")
-        return p
+# Short names for the plugin family.  They are one engine with different
+# defaults, so these are conveniences, not different effects.
+BUNDLE_ALIASES = {
+    "film": "spektrafilm",
+    "spektrafilm": "spektrafilm",
+    "lens": "spektrafilm_lens",
+    "diffuse": "spektrafilm_diffuse",
+    "flow": "spektrafilm_flow",
+}
 
+
+def bundle_roots() -> list[Path]:
     roots = [Path("/usr/OFX/Plugins"), Path.home() / "OFX" / "Plugins"]
     roots += [Path(p) for p in os.environ.get("OFX_PLUGIN_PATH", "").split(":") if p]
-    # Also look beside this checkout, which is how an unpacked download sits.
-    roots.append(HERE.parent)
-    for root in roots:
+    roots.append(HERE.parent)  # an unpacked download sits beside this checkout
+    return roots
+
+
+def find_bundle(explicit: str | None) -> Path:
+    """Resolve a path, a short name like 'lens', or the default bundle."""
+    wanted = "spektrafilm"
+    if explicit:
+        p = Path(explicit).expanduser()
+        if p.exists():
+            return p
+        key = explicit.lower().removesuffix(".ofx.bundle")
+        if key not in BUNDLE_ALIASES and not key.startswith("spektrafilm"):
+            sys.exit(f"spektra: no such bundle: {explicit}\n"
+                     f"Try a path, or one of: {', '.join(sorted(BUNDLE_ALIASES))}")
+        wanted = BUNDLE_ALIASES.get(key, key)
+
+    for root in bundle_roots():
         if not root.is_dir():
             continue
-        for b in sorted(root.glob("*.ofx.bundle")):
-            if "spektrafilm.ofx.bundle" == b.name:
-                return b
+        cand = root / f"{wanted}.ofx.bundle"
+        if cand.is_dir():
+            return cand
     sys.exit(
-        "spektra: could not find spektrafilm.ofx.bundle.\n"
+        f"spektra: could not find {wanted}.ofx.bundle.\n"
         "Install the plugin, set OFX_PLUGIN_PATH, or pass --bundle PATH."
     )
+
+
+_renderers: dict[str, "Renderer"] = {}
+
+
+def renderer_for(bundle: str | None) -> "Renderer":
+    """One Renderer per bundle, reused across passes and images."""
+    path = str(find_bundle(bundle))
+    if path not in _renderers:
+        _renderers[path] = Renderer(find_renderer(), Path(path))
+    return _renderers[path]
 
 
 # ------------------------------------------------------------------ sfraw I/O
@@ -435,6 +466,7 @@ def default_session() -> dict:
         "output_colorspace": "sRGB",
         "params": {},
         "seed": None,
+        "chain": [],
         "preview": None,
         "output_options": {"bit_depth": 8, "quality": 95},
     }
@@ -577,11 +609,38 @@ def session_from_args(args, rend: Renderer) -> dict:
             sys.exit(f"spektra: --set wants NAME=VALUE, got {kv!r}")
         k, v = kv.split("=", 1)
         s["params"][k] = v
+    for spec in args.chain or []:
+        name, _, preset = spec.partition(":")
+        step: dict = {"bundle": name.strip(), "params": {}}
+        if preset.strip():
+            r2 = renderer_for(name.strip())
+            cat, sel = resolve_preset(r2, preset.strip())
+            step["preset"] = {"category": cat[1], "selection": sel[1]}
+        s["chain"].append(step)
     if args.bit_depth is not None:
         s["output_options"]["bit_depth"] = args.bit_depth
     if args.quality is not None:
         s["output_options"]["quality"] = args.quality
     return s
+
+
+def render_pipeline(session: dict, linear: np.ndarray,
+                    rend: Renderer | None = None) -> np.ndarray:
+    """Run the first pass and any chained ones.  Shared by the CLI and the GUI."""
+    rend = rend or renderer_for(session.get("bundle"))
+    out = rend.render(linear, session_to_sets(session))
+
+    # Extra passes run on the previous pass's output.  That output is display
+    # encoded, so each pass reads in the encoding the one before it wrote.
+    previous_out = session.get("output_colorspace") or "sRGB"
+    for step in session.get("chain") or []:
+        p = dict(step)
+        p.setdefault("input_colorspace", previous_out)
+        p.setdefault("output_colorspace", "sRGB")
+        p.setdefault("seed", session.get("seed"))
+        out = renderer_for(p.get("bundle")).render(out, session_to_sets(p))
+        previous_out = p["output_colorspace"]
+    return out
 
 
 def render_session(rend: Renderer, session: dict, src: Path) -> tuple[np.ndarray, dict]:
@@ -591,7 +650,7 @@ def render_session(rend: Renderer, session: dict, src: Path) -> tuple[np.ndarray
     preview = session.get("preview") or {}
     if preview.get("long_edge"):
         linear = resize_linear(linear, int(preview["long_edge"]))
-    return rend.render(linear, session_to_sets(session)), meta
+    return render_pipeline(session, linear, rend), meta
 
 
 def process_one(rend: Renderer, src: Path, dst: Path, session: dict,
@@ -623,6 +682,11 @@ def main() -> None:
   spektra photo.jpg out.jpg --preset "OIL!" --dump-session look.json
   spektra --session look.json
   spektra --session '{"input":"a.jpg","output":"b.jpg","seed":7}'
+
+  # the companion plugins: extra passes over the first result
+  spektra photo.jpg out.jpg --preset "Marty - Warm" --chain lens
+  spektra photo.jpg out.jpg --chain "diffuse:Clean Slate" --chain lens
+  spektra photo.jpg out.jpg --bundle diffuse --preset "OIL!"
 """,
     )
     ap.add_argument("inputs", nargs="*", type=Path)
@@ -641,6 +705,9 @@ def main() -> None:
                     help="load a session: a path, a literal JSON object, or - for stdin")
     ap.add_argument("--dump-session", nargs="?", const="-", metavar="PATH",
                     help="write the resolved session as JSON and exit (default stdout)")
+    ap.add_argument("--chain", action="append", metavar="BUNDLE[:PRESET]",
+                    help="run another pass after the first, e.g. --chain lens "
+                         "or --chain 'diffuse:Clean Slate' (repeatable)")
     ap.add_argument("--seed", type=int, metavar="N",
                     help="pin every random seed, making the render reproducible")
     ap.add_argument("--preview", nargs="?", type=int, const=1100, metavar="PX",
@@ -654,7 +721,7 @@ def main() -> None:
     args = ap.parse_args()
 
     pre = load_session(args.session) if args.session else {}
-    rend = Renderer(find_renderer(), find_bundle(args.bundle or pre.get("bundle")))
+    rend = renderer_for(args.bundle or pre.get("bundle"))
 
     if args.info:
         if not args.inputs:

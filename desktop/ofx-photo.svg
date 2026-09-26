@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b2b33"/><stop offset="1" stop-color="#14141a"/>
+    </linearGradient>
+    <linearGradient id="strip" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0"   stop-color="#e8643c"/>
+      <stop offset="0.45" stop-color="#d8c24a"/>
+      <stop offset="1"   stop-color="#3f9fd6"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="26" fill="url(#bg)"/>
+  <!-- a length of film: sprocket rails top and bottom, image area between -->
+  <rect x="18" y="30" width="92" height="68" rx="5" fill="url(#strip)"/>
+  <rect x="18" y="30" width="92" height="11" fill="#14141a" opacity="0.72"/>
+  <rect x="18" y="87" width="92" height="11" fill="#14141a" opacity="0.72"/>
+  <g fill="#e9e9ef">
+    <rect x="25" y="33" width="7" height="5" rx="1.4"/>
+    <rect x="41" y="33" width="7" height="5" rx="1.4"/>
+    <rect x="57" y="33" width="7" height="5" rx="1.4"/>
+    <rect x="73" y="33" width="7" height="5" rx="1.4"/>
+    <rect x="89" y="33" width="7" height="5" rx="1.4"/>
+    <rect x="25" y="90" width="7" height="5" rx="1.4"/>
+    <rect x="41" y="90" width="7" height="5" rx="1.4"/>
+    <rect x="57" y="90" width="7" height="5" rx="1.4"/>
+    <rect x="73" y="90" width="7" height="5" rx="1.4"/>
+    <rect x="89" y="90" width="7" height="5" rx="1.4"/>
+  </g>
+  <circle cx="64" cy="64" r="15" fill="#14141a" opacity="0.5"/>
+  <circle cx="64" cy="64" r="15" fill="none" stroke="#f2f2f7" stroke-width="3.5"/>
+  <circle cx="58.5" cy="58.5" r="4" fill="#f2f2f7" opacity="0.85"/>
+</svg>
