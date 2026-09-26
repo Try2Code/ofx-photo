@@ -10,7 +10,8 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from PyQt5.QtCore import QSettings, QSize, Qt, QThread, pyqtSignal
+from PyQt5.QtCore import (QEvent, QObject, QSettings, QSize, Qt, QThread,
+                          pyqtSignal)
 from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
@@ -33,6 +34,21 @@ PREVIEW_EDGE = 1100
 
 # resize_linear lives in the CLI module, so both sides scale previews alike.
 QUICK_GROUPS = ("quickGroup", "managePresetGroup", "colorManagementGroup")
+
+
+class WheelGuard(QObject):
+    """Stop combo boxes and spin boxes swallowing the scroll wheel.
+
+    Qt sends the wheel to whatever sits under the pointer, so scrolling the
+    panel would silently change parameter values.  Unfocused widgets now pass
+    the event up to the scroll area instead.
+    """
+
+    def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.Wheel and not obj.hasFocus():
+            ev.ignore()
+            return True
+        return super().eventFilter(obj, ev)
 
 
 # ------------------------------------------------------------- render thread
@@ -95,7 +111,7 @@ class Window(QMainWindow):
         self.rend = rend
         self.settings = QSettings("ofx-photo", "spektra-gui")
         self.setWindowTitle("spektra")
-        self.resize(1180, 760)
+        self.resize(1480, 900)
 
         self.source_path: Path | None = None
         self.full_linear: np.ndarray | None = None
@@ -107,6 +123,8 @@ class Window(QMainWindow):
         self.pending = False
         self.showing_original = False
         self.widgets: dict[str, tuple[str, object]] = {}
+        self.wheel_guard = WheelGuard()
+        self.group_open: dict[str, bool] = {}
         # Only parameters the user actually touched are sent.  Sending them all
         # would re-apply defaults on top of whatever preset was just loaded.
         self.dirty: set[str] = set()
@@ -150,14 +168,17 @@ class Window(QMainWindow):
         out.addWidget(self.b_full)
         out.addWidget(self.b_save)
         left.addLayout(out)
-        lay.addLayout(left, 3)
+        lay.addLayout(left, 1)
 
         # ---- right hand control panel
         panel = QWidget()
-        panel.setMaximumWidth(400)
+        # Wide enough that long parameter labels and their controls fit without
+        # a horizontal scrollbar, which matters most with every parameter shown.
+        panel.setMinimumWidth(560)
         pv = QVBoxLayout(panel)
 
         form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         self.cb_category = QComboBox()
         self.cb_preset = QComboBox()
         self.cb_user = QComboBox()
@@ -206,19 +227,32 @@ class Window(QMainWindow):
         line.setStyleSheet("color:#333;")
         pv.addWidget(line)
 
+        allrow = QHBoxLayout()
         self.chk_all = QCheckBox("Show every parameter (830)")
         self.chk_all.toggled.connect(self.rebuild_params)
-        pv.addWidget(self.chk_all)
+        b_expand = QPushButton("Expand all")
+        b_collapse = QPushButton("Collapse all")
+        b_expand.clicked.connect(lambda: self.set_all_groups(True))
+        b_collapse.clicked.connect(lambda: self.set_all_groups(False))
+        for b in (b_expand, b_collapse):
+            b.setMaximumWidth(110)
+        allrow.addWidget(self.chk_all, 1)
+        allrow.addWidget(b_expand)
+        allrow.addWidget(b_collapse)
+        pv.addLayout(allrow)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll.setFocusPolicy(Qt.StrongFocus)
         self.param_host = QWidget()
         self.param_layout = QVBoxLayout(self.param_host)
         self.param_layout.setAlignment(Qt.AlignTop)
         self.scroll.setWidget(self.param_host)
         pv.addWidget(self.scroll, 1)
 
-        lay.addWidget(panel, 1)
+        lay.addWidget(panel, 0)
         self.setCentralWidget(root)
         self.setStatusBar(QStatusBar())
 
@@ -283,22 +317,62 @@ class Window(QMainWindow):
             parent = p.get("parent") or ""
             if parent != current:
                 current = parent
-                head = QLabel(groups.get(parent, parent or "General"))
-                head.setStyleSheet("color:#8ab4f8;font-weight:bold;margin-top:8px;")
+                title = groups.get(parent, parent or "General")
+                head = QToolButton()
+                head.setText(title)
+                head.setCheckable(True)
+                head.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+                head.setStyleSheet(
+                    "QToolButton{color:#8ab4f8;font-weight:bold;border:none;"
+                    "margin-top:8px;text-align:left;}")
+                head.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
                 self.param_layout.addWidget(head)
                 holder = QWidget()
                 form = QFormLayout(holder)
                 form.setContentsMargins(4, 0, 0, 0)
+                form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+                form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+                form.setLabelAlignment(Qt.AlignLeft)
                 self.param_layout.addWidget(holder)
+
+                # Remember which groups the user left open across rebuilds.
+                # With every parameter shown there are 49 of them, so they
+                # start collapsed in that mode and open in the quick one.
+                open_now = self.group_open.get(parent, not show_all)
+                head.setChecked(open_now)
+                holder.setVisible(open_now)
+                head.setArrowType(Qt.DownArrow if open_now else Qt.RightArrow)
+
+                def toggled(on, h=holder, b=head, key=parent):
+                    h.setVisible(on)
+                    b.setArrowType(Qt.DownArrow if on else Qt.RightArrow)
+                    self.group_open[key] = on
+
+                head.toggled.connect(toggled)
 
             w = self._widget_for(p)
             if w is not None and form is not None:
-                form.addRow(p["label"], w)
+                w.setFocusPolicy(Qt.StrongFocus)
+                w.installEventFilter(self.wheel_guard)
+                w.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                if isinstance(w, QComboBox):
+                    # a long option must not widen the whole panel
+                    w.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+                    w.setMinimumContentsLength(12)
+                label = QLabel(p["label"])
+                label.setWordWrap(True)
+                form.addRow(label, w)
 
         if not self.widgets:
             self.param_layout.addWidget(QLabel("No quick parameters; tick the box above."))
         else:
             self.sync_widgets()
+
+    def set_all_groups(self, open_: bool):
+        for key in list(self.group_open):
+            self.group_open[key] = open_
+        for head in self.param_host.findChildren(QToolButton):
+            head.setChecked(open_)
 
     def _widget_for(self, p):
         t, name = p["type"], p["name"]
@@ -553,14 +627,17 @@ class Window(QMainWindow):
         if self.pending:
             self.on_change()
 
-    def _display(self, linear):
-        u8 = (cli.linear_to_srgb(linear[..., :3]) * 255.0 + 0.5).astype(np.uint8)
+    def _display(self, img, encoded: bool = True):
+        """encoded=True for plugin output, which already carries its display
+        transform; False for the untouched source, which is still linear."""
+        rgb = img[..., :3] if encoded else cli.linear_to_srgb(img[..., :3])
+        u8 = (np.clip(rgb, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
         self.view.show_array(np.ascontiguousarray(u8))
 
     def _show_original(self, on):
         self.showing_original = on
         if on and self.preview_linear is not None:
-            self._display(self.preview_linear)
+            self._display(self.preview_linear, encoded=False)
         elif self.rendered is not None:
             self._display(self.rendered)
 

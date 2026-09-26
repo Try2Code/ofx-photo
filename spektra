@@ -38,6 +38,7 @@ P_USER_PRESET = "presetSelection"
 P_PRESET_NAME = "presetName"
 P_SAVE = "savePreset"
 P_LOAD = "loadPreset"
+P_OUTPUT_CS = "sdrOutputColorSpace"
 
 
 # --------------------------------------------------------------- locating bits
@@ -333,9 +334,14 @@ def save_deep(path: Path, srgb: np.ndarray) -> bool:
         return r.returncode == 0 and path.exists()
 
 
-def save_photo(path: Path, linear_rgb: np.ndarray, bit_depth: int, quality: int,
+def save_photo(path: Path, display_rgb: np.ndarray, bit_depth: int, quality: int,
                meta: dict) -> None:
-    srgb = linear_to_srgb(linear_rgb[..., :3])
+    """Write pixels the plugin has already encoded for display.
+
+    The plugin applies its own output transform, so what comes back is sRGB
+    already.  Encoding it again lifted shadows by up to 70 levels out of 255.
+    """
+    srgb = np.clip(display_rgb[..., :3], 0.0, 1.0)
     ext = path.suffix.lower()
     if bit_depth == 16 and ext in (".tif", ".tiff", ".png"):
         if save_deep(path, srgb):
@@ -426,6 +432,7 @@ def default_session() -> dict:
         "preset": {"category": None, "selection": None},
         "user_preset": None,
         "input_colorspace": "Linear Rec.709",
+        "output_colorspace": "sRGB",
         "params": {},
         "seed": None,
         "preview": None,
@@ -479,6 +486,10 @@ def session_to_sets(session: dict) -> list[tuple[str, str]]:
     # After the preset, so explicit settings always win over it.
     if session.get("input_colorspace"):
         sets.append((P_INPUT_CS, str(session["input_colorspace"])))
+    # The plugin returns display-encoded pixels, not linear ones.  Pin the
+    # encoding so the writer knows exactly what it is being handed.
+    if session.get("output_colorspace"):
+        sets.append((P_OUTPUT_CS, str(session["output_colorspace"])))
     sets += seed_sets(session.get("seed"))
     for name, value in (session.get("params") or {}).items():
         sets.append((str(name), str(value)))

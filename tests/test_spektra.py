@@ -234,6 +234,37 @@ def test_raw_scaling(h: Harness, raw: Path | None):
     check("raw reports a linear colourspace", "Linear" in cs, cs)
 
 
+def test_output_encoding(h: Harness):
+    """The plugin returns display-encoded pixels, not linear ones.
+
+    Getting this wrong encodes gamma twice, which lifted shadows by up to 70
+    levels out of 255.  Two different output encodings of the same render must
+    decode back to the same linear signal.
+    """
+    vals = np.array([0.0, 0.02, 0.05, 0.18, 0.5, 0.9, 1.0], np.float32)
+    ramp = np.ones((8, len(vals), 3), np.float32) * vals[None, :, None]
+
+    def render_with(space):
+        s = h.session(preset={"category": "Clean Slate", "selection": "Clean Slate"},
+                      output_colorspace=space, params={"quickGrainEnabled": "false"})
+        return h.rend.render(ramp, cli.session_to_sets(s))[4, :, 0].astype(np.float64)
+
+    srgb = render_with("sRGB")
+    g24 = render_with("Rec.709 Gamma 2.4")
+    lin_a = np.where(srgb <= 0.04045, srgb / 12.92, ((srgb + 0.055) / 1.055) ** 2.4)
+    lin_b = np.clip(g24, 0, None) ** 2.4
+    check("two output encodings agree on the linear signal",
+          np.allclose(lin_a, lin_b, atol=3e-3),
+          "max diff %.5f" % float(np.abs(lin_a - lin_b).max()))
+
+    # Clean Slate is near enough an identity that mid grey must survive it.
+    mid = lin_a[3]
+    check("mid grey survives a neutral preset", abs(mid - 0.18) < 0.03,
+          "linear 0.18 in -> %.4f out" % mid)
+    check("output is display-encoded, not linear", srgb[3] > 0.35,
+          "mid grey encodes to %.4f" % srgb[3])
+
+
 def test_colour_profiles(h: Harness):
     """A wide-gamut file must be converted, not assumed to be sRGB."""
     from PIL import Image, ImageCms
@@ -372,6 +403,7 @@ def main():
         ("raw", lambda: test_raw_scaling(h, args.raw)),
         ("profiles", lambda: test_colour_profiles(h)),
         ("metadata", lambda: test_metadata(h)),
+        ("encoding", lambda: test_output_encoding(h)),
         ("gui", lambda: test_gui_model(h)),
     ]
 
