@@ -2,57 +2,52 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256"
      role="img" aria-labelledby="title desc">
   <title id="title">Spektra Photo</title>
-  <desc id="desc">Three subtractive dye layers over a strip of film.</desc>
+  <desc id="desc">A photographic print, untouched on the left and film-graded on the right.</desc>
 
   <defs>
     <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#fbfbfd"/>
-      <stop offset="1" stop-color="#e4e4ea"/>
+      <stop offset="0" stop-color="#363641"/>
+      <stop offset="1" stop-color="#16161c"/>
     </linearGradient>
 
-    <!-- The dye layers.  Each circle is written out rather than referenced with
-         <use>, because some renderers will not instantiate a <use> of a shape
-         that carries no fill of its own. -->
-    <clipPath id="clipCyan"><circle cx="100" cy="106" r="55"/></clipPath>
-    <clipPath id="clipMagenta"><circle cx="156" cy="106" r="55"/></clipPath>
-    <clipPath id="tileShape"><rect width="256" height="256" rx="56"/></clipPath>
+    <!-- Left: the photograph as it arrives, cool and flat. -->
+    <linearGradient id="plain" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a8bccc"/>
+      <stop offset="1" stop-color="#6d8396"/>
+    </linearGradient>
+
+    <!-- Right: the same photograph through film. -->
+    <linearGradient id="graded" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f8c65f"/>
+      <stop offset="0.55" stop-color="#e2694a"/>
+      <stop offset="1" stop-color="#77386b"/>
+    </linearGradient>
+
+    <clipPath id="window"><rect x="44" y="52" width="168" height="124" rx="7"/></clipPath>
+    <clipPath id="rightHalf"><rect x="130" y="52" width="82" height="124"/></clipPath>
   </defs>
 
   <rect width="256" height="256" rx="56" fill="url(#tile)"/>
 
-  <!-- Cyan, magenta and yellow, with every overlap multiplied by hand.
-       mix-blend-mode would be the obvious way to do this and librsvg, which
-       is what the desktop draws icons with, ignores it. -->
-  <g>
-    <circle cx="100" cy="106" r="55" fill="#2ec4e6"/>
-    <circle cx="156" cy="106" r="55" fill="#ea3fa0"/>
-    <circle cx="128" cy="154" r="55" fill="#f2d341"/>
+  <!-- The print, with the white border a photograph is handed to you with. -->
+  <rect x="32" y="40" width="192" height="176" rx="15" fill="#fbfbfd"/>
 
-    <g clip-path="url(#clipCyan)">
-      <circle cx="156" cy="106" r="55" fill="#2a3090"/>
-      <circle cx="128" cy="154" r="55" fill="#2ca23b"/>
-    </g>
-    <g clip-path="url(#clipMagenta)">
-      <circle cx="128" cy="154" r="55" fill="#de3429"/>
-    </g>
-    <g clip-path="url(#clipCyan)">
-      <g clip-path="url(#clipMagenta)">
-        <circle cx="128" cy="154" r="55" fill="#282825"/>
-      </g>
-    </g>
-  </g>
+  <g clip-path="url(#window)">
+    <!-- untouched -->
+    <rect x="44" y="52" width="168" height="124" fill="url(#plain)"/>
+    <circle cx="90" cy="90" r="20" fill="#eef3f7"/>
+    <path d="M44 176 L102 112 L143 156 L175 126 L212 176 Z" fill="#4b5d6c"/>
+    <path d="M44 176 L92 130 L132 176 Z" fill="#3a4957"/>
 
-  <!-- A length of film across the foot, clipped to the tile so it follows the
-       corner radius.  Without it the mark could pass for a paint program. -->
-  <g clip-path="url(#tileShape)">
-    <rect x="0" y="198" width="256" height="58" fill="#18181e"/>
-    <g fill="#fbfbfd">
-      <rect x="12"  y="210" width="20" height="14" rx="3.5"/>
-      <rect x="56"  y="210" width="20" height="14" rx="3.5"/>
-      <rect x="100" y="210" width="20" height="14" rx="3.5"/>
-      <rect x="144" y="210" width="20" height="14" rx="3.5"/>
-      <rect x="188" y="210" width="20" height="14" rx="3.5"/>
-      <rect x="232" y="210" width="20" height="14" rx="3.5"/>
+    <!-- graded -->
+    <g clip-path="url(#rightHalf)">
+      <rect x="44" y="52" width="168" height="124" fill="url(#graded)"/>
+      <circle cx="90" cy="90" r="20" fill="#fff2c8"/>
+      <path d="M44 176 L102 112 L143 156 L175 126 L212 176 Z" fill="#46283f"/>
+      <path d="M44 176 L92 130 L132 176 Z" fill="#33203a"/>
     </g>
+
+    <!-- the divide -->
+    <rect x="127" y="52" width="5" height="124" fill="#fbfbfd"/>
   </g>
 </svg>
