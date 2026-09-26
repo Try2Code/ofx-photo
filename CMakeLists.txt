@@ -36,26 +36,48 @@ set(OFX_PHOTO_EXEC "${CMAKE_INSTALL_FULL_BINDIR}/spektra-gui")
 set(OFX_PHOTO_ICON "ofx-photo")
 configure_file(desktop/ofx-photo.desktop.in
                "${CMAKE_CURRENT_BINARY_DIR}/ofx-photo.desktop" @ONLY)
-install(FILES "${CMAKE_CURRENT_BINARY_DIR}/ofx-photo.desktop"
-        DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
 
+# Where the menu entry and icons go.  A desktop session reads its environment
+# at login and never sees a shell rc, so a prefix like ~/local will not show up
+# in the menu however PATH is set.  XDG_DATA_HOME is always searched, so by
+# default the integration goes there while the programs stay in the prefix.
+option(DESKTOP_TO_PREFIX
+       "Install the menu entry and icons under the prefix instead of XDG_DATA_HOME" OFF)
+
+if(DESKTOP_TO_PREFIX)
+  set(OFX_PHOTO_DESKTOP_DIR "${CMAKE_INSTALL_DATADIR}")
+else()
+  if(DEFINED ENV{XDG_DATA_HOME})
+    set(OFX_PHOTO_DESKTOP_DIR "$ENV{XDG_DATA_HOME}")
+  else()
+    set(OFX_PHOTO_DESKTOP_DIR "$ENV{HOME}/.local/share")
+  endif()
+endif()
+
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/ofx-photo.desktop"
+        DESTINATION "${OFX_PHOTO_DESKTOP_DIR}/applications")
 install(FILES desktop/ofx-photo.svg
-        DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
+        DESTINATION "${OFX_PHOTO_DESKTOP_DIR}/icons/hicolor/scalable/apps")
 foreach(size 16 24 32 48 64 128 256)
   install(FILES desktop/icons/${size}/ofx-photo.png
-          DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/${size}x${size}/apps)
+          DESTINATION "${OFX_PHOTO_DESKTOP_DIR}/icons/hicolor/${size}x${size}/apps")
 endforeach()
 
-# A prefix outside the XDG defaults needs to be on XDG_DATA_DIRS before the
-# menu entry and icon are seen, so say so rather than leave it a mystery.
 install(CODE "
-  set(share \"${CMAKE_INSTALL_FULL_DATADIR}\")
-  if(NOT share MATCHES \"^(/usr/share|/usr/local/share|\$ENV{HOME}/.local/share)\$\")
-    message(STATUS \"\")
-    message(STATUS \"Installed outside the standard data directories.\")
-    message(STATUS \"For the menu entry and icon to be found, add to your shell:\")
-    message(STATUS \"    export XDG_DATA_DIRS=\\\"\${share}:\\\$XDG_DATA_DIRS\\\"\")
-    message(STATUS \"and make sure ${CMAKE_INSTALL_FULL_BINDIR} is on your PATH.\")
-    message(STATUS \"\")
+  execute_process(COMMAND update-desktop-database \"${OFX_PHOTO_DESKTOP_DIR}/applications\"
+                  ERROR_QUIET RESULT_VARIABLE _ignored)
+  execute_process(COMMAND gtk-update-icon-cache -qtf \"${OFX_PHOTO_DESKTOP_DIR}/icons/hicolor\"
+                  ERROR_QUIET RESULT_VARIABLE _ignored)
+  message(STATUS \"Menu entry and icons: ${OFX_PHOTO_DESKTOP_DIR}\")
+")
+
+# Where the programs landed, and how to reach them.
+install(CODE "
+  message(STATUS \"\")
+  message(STATUS \"Programs: ${CMAKE_INSTALL_FULL_BINDIR}\")
+  if(NOT \"${CMAKE_INSTALL_FULL_BINDIR}\" MATCHES \"^(/usr/bin|/usr/local/bin|$ENV{HOME}/.local/bin)$\")
+    message(STATUS \"Add it to your PATH to run them by name:\")
+    message(STATUS \"    export PATH=\\\"${CMAKE_INSTALL_FULL_BINDIR}:\\$PATH\\\"\")
   endif()
+  message(STATUS \"\")
 ")

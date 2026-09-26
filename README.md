@@ -70,20 +70,22 @@ cmake --build build
 cmake --install build
 ```
 
-That places `spektra`, `spektra-gui` and `spektra-render` in `<prefix>/bin`, and the
-desktop entry and icons under `<prefix>/share`. The default prefix is `~/.local`, which
-needs no root and is already on the desktop's search path.
+That places `spektra`, `spektra-gui` and `spektra-render` in `<prefix>/bin`. The default
+prefix is `~/.local`, which needs no root.
 
-For any other prefix, two things have to be on the path for the menu entry to appear —
-the installer prints both:
+The **menu entry and icons go to `$XDG_DATA_HOME`** (`~/.local/share`) whatever the prefix,
+because a desktop session reads its environment at login and never sees a shell rc — put
+them under `~/local/share` and the launcher simply never appears, however `PATH` is set.
+Pass `-DDESKTOP_TO_PREFIX=ON` to override that.
+
+So the only thing a non-standard prefix needs is `PATH`, which the installer prints:
 
 ```sh
 export PATH="$HOME/local/bin:$PATH"
-export XDG_DATA_DIRS="$HOME/local/share:$XDG_DATA_DIRS"
 ```
 
-The tools find each other by sitting together in one `bin`, so the prefix can be moved or
-renamed freely.
+The three tools find each other by sitting together in one `bin`, so a prefix can be moved
+or renamed freely.
 
 `install-desktop.sh` adds a **Spektra Photo** entry to the applications menu and to the
 *Open With* list for JPEG, PNG, TIFF and the common raw formats. It writes only under
