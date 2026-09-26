@@ -264,6 +264,7 @@ class Window(QMainWindow):
 
         self.source_path: Path | None = None
         self.full_linear: np.ndarray | None = None
+        self.raw_linear: np.ndarray | None = None
         self.preview_linear: np.ndarray | None = None
         self.meta: dict = {}
         self.rendered: np.ndarray | None = None   # linear, preview sized
@@ -405,8 +406,21 @@ class Window(QMainWindow):
             wdg.currentIndexChanged.connect(self.on_lens_choice)
             wdg.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
             wdg.setMinimumContentsLength(12)
-        passes.addRow(self.chk_diffuse, QLabel(""))
-        passes.addRow(self.chk_lens, QLabel(""))
+        self.chk_evbias = QCheckBox("EV bias")
+        self.chk_evbias.setToolTip(
+            "Undo the camera's exposure compensation on raw files.\n"
+            "A shot taken at -1.67 EV really is that dark in the raw; a camera\n"
+            "JPEG hides it because the camera's own rendering compensates.\n"
+            "Raw only - on a JPEG it would compensate twice.")
+        self.chk_evbias.toggled.connect(self.on_evbias)
+
+        boxes = QHBoxLayout()
+        boxes.addWidget(self.chk_evbias)
+        boxes.addWidget(self.chk_diffuse)
+        boxes.addWidget(self.chk_lens)
+        boxes.addStretch(1)
+        pv.addLayout(boxes)
+
         passes.addRow("  Vignette", self.cb_vignette)
         passes.addRow("  Distortion", self.cb_distort)
         pv.addLayout(passes)
@@ -638,6 +652,7 @@ class Window(QMainWindow):
         s["params"] = dict(self.extra_params)
         s["params"].update({n: self._value_str(n) for n in self.widgets if n in self.dirty})
         s["seed"] = int(self.sp_seed.value()) if self.chk_seed.isChecked() else None
+        s["raw_exposure_bias"] = self.chk_evbias.isChecked()
         s["preview"] = {"long_edge": PREVIEW_EDGE} if for_preview else None
 
         chain = []
@@ -676,6 +691,7 @@ class Window(QMainWindow):
             if s.get("seed") is not None:
                 self.sp_seed.setValue(int(s["seed"]))
 
+            self.chk_evbias.setChecked(bool(s.get("raw_exposure_bias")))
             self.chk_diffuse.setChecked(False)
             self.chk_lens.setChecked(False)
             self.cb_vignette.setCurrentText("Off")
@@ -811,10 +827,9 @@ class Window(QMainWindow):
             QMessageBox.warning(self, "spektra", str(e))
             self.statusBar().clearMessage()
             return
-        self.source_path, self.full_linear, self.meta = path, linear, meta
-        self.full_render = None
+        self.source_path, self.raw_linear, self.meta = path, linear, meta
+        self.rebuild_source()
         h, w = linear.shape[:2]
-        self.preview_linear = cli.resize_linear(linear, PREVIEW_EDGE)
         self.lbl_file.setText(f"{path.name}   {w}×{h}")
         self.settings.setValue("last_dir", str(path.parent))
         self.on_change()
@@ -831,6 +846,27 @@ class Window(QMainWindow):
             self.chk_lens.blockSignals(False)
             self.statusBar().showMessage("lens pass switched on", 4000)
         self.on_change()
+
+    def on_evbias(self):
+        """Rescale the pixels, then re-render.  The gain is applied to the image
+        before the plugin sees it, so the preview has to be rebuilt."""
+        self.rebuild_source()
+        self.on_change()
+
+    def rebuild_source(self):
+        if self.raw_linear is None:
+            return
+        self.full_linear = self._with_bias(self.raw_linear)
+        self.preview_linear = cli.resize_linear(self.full_linear, PREVIEW_EDGE)
+        self.full_render = None
+
+    def _with_bias(self, linear):
+        if not self.chk_evbias.isChecked():
+            return linear
+        out, note = cli.apply_exposure_bias(linear, self.meta)
+        if "undid" in note:
+            self.statusBar().showMessage(note, 4000)
+        return out
 
     def on_category(self):
         self._refresh_presets()

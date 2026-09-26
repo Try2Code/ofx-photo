@@ -145,9 +145,14 @@ def load_photo(path: Path, raw_linear: bool = True) -> tuple[np.ndarray, str, di
     """Return (linear RGBA float32, colourspace name for the plugin, metadata)."""
     meta: dict = {}
     if path.suffix.lower() in RAW_SUFFIXES:
+        meta["is_raw"] = True
+        meta["exposure_bias"] = read_exposure_bias(path)
         rgb = load_raw(path)
         # dcraw -4 gives linear scene data with sRGB/Rec.709 primaries.
         return rgb, "Linear Rec.709", meta
+
+    meta["is_raw"] = False
+    meta["exposure_bias"] = read_exposure_bias(path)
 
     deep = read_deep_tiff(path)
     if deep is not None:
@@ -174,6 +179,37 @@ def load_photo(path: Path, raw_linear: bool = True) -> tuple[np.ndarray, str, di
     if a.shape[2] == 4:
         a = a[..., :3]
     return srgb_to_linear(a).astype(np.float32), "Linear Rec.709", meta
+
+
+def read_exposure_bias(path: Path) -> float | None:
+    """The EV compensation the photographer dialled in, from EXIF."""
+    try:
+        from PIL import ExifTags
+
+        ex = Image.open(path).getexif()
+        tags = {ExifTags.TAGS.get(k, k): v for k, v in ex.items()}
+        tags.update({ExifTags.TAGS.get(k, k): v for k, v in ex.get_ifd(0x8769).items()})
+        bias = tags.get("ExposureBiasValue")
+        return None if bias is None else float(bias)
+    except Exception:
+        return None
+
+
+def apply_exposure_bias(linear: np.ndarray, meta: dict) -> tuple[np.ndarray, str]:
+    """Undo the camera's EV compensation on raw data.
+
+    A raw file records the scene as it was exposed, so a shot taken at -1.67 EV
+    really is that much darker.  A camera JPEG hides this, because the camera's
+    own rendering partly compensates - which is why the two look so different
+    side by side.  Raw only: applying it to a JPEG would compensate twice.
+    """
+    bias = meta.get("exposure_bias")
+    if not meta.get("is_raw"):
+        return linear, "not raw, exposure bias left alone"
+    if not bias:
+        return linear, "no exposure bias recorded"
+    gain = 2.0 ** (-float(bias))
+    return (linear * gain).astype(np.float32), f"undid {bias:+.2f} EV (x{gain:.2f})"
 
 
 def read_deep_tiff(path: Path) -> np.ndarray | None:
@@ -466,6 +502,7 @@ def default_session() -> dict:
         "output_colorspace": "sRGB",
         "params": {},
         "seed": None,
+        "raw_exposure_bias": False,
         "chain": [],
         "preview": None,
         "output_options": {"bit_depth": 8, "quality": 95},
@@ -602,6 +639,8 @@ def session_from_args(args, rend: Renderer) -> dict:
         s["input_colorspace"] = args.input_colorspace
     if args.seed is not None:
         s["seed"] = args.seed
+    if args.raw_ev_bias:
+        s["raw_exposure_bias"] = True
     if args.preview is not None:
         s["preview"] = {"long_edge": args.preview}
     for kv in args.set or []:
@@ -645,6 +684,9 @@ def render_pipeline(session: dict, linear: np.ndarray,
 
 def render_session(rend: Renderer, session: dict, src: Path) -> tuple[np.ndarray, dict]:
     linear, cs, meta = load_photo(src)
+    if session.get("raw_exposure_bias"):
+        linear, note = apply_exposure_bias(linear, meta)
+        meta["exposure_note"] = note
     if not session.get("input_colorspace"):
         session["input_colorspace"] = cs
     preview = session.get("preview") or {}
@@ -708,6 +750,9 @@ def main() -> None:
     ap.add_argument("--chain", action="append", metavar="BUNDLE[:PRESET]",
                     help="run another pass after the first, e.g. --chain lens "
                          "or --chain 'diffuse:Clean Slate' (repeatable)")
+    ap.add_argument("--raw-ev-bias", action="store_true",
+                    help="undo the camera's EV compensation on raw files, so they "
+                         "land where the matching JPEG would")
     ap.add_argument("--seed", type=int, metavar="N",
                     help="pin every random seed, making the render reproducible")
     ap.add_argument("--preview", nargs="?", type=int, const=1100, metavar="PX",

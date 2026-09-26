@@ -288,6 +288,32 @@ def test_chain(h: Harness):
           cli.find_bundle("lens").name)
 
 
+def test_exposure_bias(h: Harness, raw: Path | None):
+    """Undoing the camera's EV compensation, raw only."""
+    if not raw:
+        results.append(("skip", "exposure bias", "no raw file given"))
+        print("  skip exposure bias   (pass --raw to enable)")
+        return
+
+    bias = cli.read_exposure_bias(raw)
+    check("exposure bias read from EXIF", bias is not None, f"{bias}")
+
+    linear, _, meta = cli.load_photo(raw)
+    out, note = cli.apply_exposure_bias(linear, meta)
+    if bias:
+        expected = 2.0 ** (-bias)
+        got = float(out.mean() / linear.mean())
+        check("raw is scaled by 2^-bias", abs(got - expected) < 1e-3,
+              "expected x%.3f, got x%.3f" % (expected, got))
+    else:
+        check("no bias recorded leaves the image alone", np.array_equal(out, linear))
+
+    # A JPEG already carries the camera's rendering, so it must be left alone.
+    jpeg, _, jmeta = cli.load_photo(h.photo)
+    same, jnote = cli.apply_exposure_bias(jpeg, jmeta)
+    check("a non-raw file is left alone", same is jpeg, jnote)
+
+
 def test_output_encoding(h: Harness):
     """The plugin returns display-encoded pixels, not linear ones.
 
@@ -423,6 +449,12 @@ def test_gui_model(h: Harness):
 
     w.cb_vignette.setCurrentText("Vintage Mechanical")
     check("a lens dropdown arms the lens pass", w.chk_lens.isChecked())
+    check("the EV bias box sits left of the two pass boxes",
+          [b.text() for b in (w.chk_evbias, w.chk_diffuse, w.chk_lens)]
+          == ["EV bias", "Diffuse pass", "Lens pass"])
+    w.chk_evbias.setChecked(True)
+    check("the EV bias box reaches the session", w.session()["raw_exposure_bias"])
+    w.chk_evbias.setChecked(False)
     check("the armed pass reaches the session",
           any(c.get("bundle") == "lens" for c in w.session().get("chain", [])))
     w.cb_vignette.setCurrentText("Off")
@@ -530,6 +562,7 @@ def main():
         ("raw", lambda: test_raw_scaling(h, args.raw)),
         ("profiles", lambda: test_colour_profiles(h)),
         ("metadata", lambda: test_metadata(h)),
+        ("bias", lambda: test_exposure_bias(h, args.raw)),
         ("chain", lambda: test_chain(h)),
         ("encoding", lambda: test_output_encoding(h)),
         ("gui", lambda: test_gui_model(h)),
