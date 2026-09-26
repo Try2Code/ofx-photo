@@ -33,7 +33,14 @@ PREVIEW_EDGE = 1100
 
 # Shown without ticking "show every parameter".  These are the groups worth
 # reaching for on most photographs.
-DEFAULT_GROUPS = ("quickAccessGroup", "filmGroup", "printGroup", "grainGroup")
+DEFAULT_GROUPS = ("quickAccessGroup", "colorGroup", "filmGroup", "printGroup",
+                  "grainGroup")
+
+# Parameters the pipeline owns.  Input and output colourspaces are set from the
+# session, and Output Role would switch the plugin to an HDR transfer that the
+# 8- and 16-bit writers cannot represent, so it would silently produce a wrong
+# file rather than an HDR one.
+PIPELINE_OWNED = ("outputRole",)
 
 THEMES = {
     "dark": {
@@ -498,6 +505,8 @@ class Window(QMainWindow):
                 continue
             if p["name"] in (cli.P_CATEGORY, cli.P_SELECTION, cli.P_USER_PRESET,
                              cli.P_INPUT_CS, cli.P_PRESET_NAME, cli.P_OUTPUT_CS):
+                continue
+            if p["name"] in PIPELINE_OWNED:
                 continue
             sections.setdefault(p.get("parent") or "", []).append(p)
 

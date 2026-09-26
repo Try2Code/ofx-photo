@@ -389,8 +389,11 @@ def test_gui_model(h: Harness):
     titles = [h.text().rsplit("  (", 1)[0]
               for h in w.param_host.findChildren(QToolButton)
               if h.objectName() == "groupHead"]
-    for wanted in ("Quick Access", "Film", "Print", "Grain"):
+    for wanted in ("Quick Access", "Color Management", "Film", "Print", "Grain"):
         check(f"{wanted!r} shown by default", wanted in titles)
+    check("Normalize W/B is reachable by default", "rcmFullRange" in w.widgets)
+    check("Output Role is withheld, the writers cannot do HDR",
+          "outputRole" not in w.widgets)
 
     # Numeric parameters are sliders with a reset, not spin boxes.
     sliders = [n for n, (k, x) in w.widgets.items() if isinstance(x, gui.SliderRow)]
