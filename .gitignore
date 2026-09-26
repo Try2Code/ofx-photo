@@ -27,3 +27,22 @@ venv/
 .vscode/
 .idea/
 *.swp
+
+# Test photographs live here but belong to their owner, not the repo.
+*.jpg
+*.JPG
+*.jpeg
+*.JPEG
+*.png
+*.tif
+*.tiff
+*.ppm
+*.NEF
+*.CR2
+*.CR3
+*.ARW
+*.DNG
+*.RAF
+*.RW2
+*.ORF
+spektra-session*.json

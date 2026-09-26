@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
 import sys
 from pathlib import Path
 
@@ -13,8 +15,8 @@ from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
     QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton,
-    QScrollArea, QSizePolicy, QSlider, QStatusBar, QToolButton, QVBoxLayout,
-    QWidget, QInputDialog,
+    QScrollArea, QSizePolicy, QSlider, QSpinBox, QStatusBar, QToolButton,
+    QVBoxLayout, QWidget, QInputDialog,
 )
 
 HERE = Path(__file__).resolve().parent
@@ -29,17 +31,7 @@ _spec.loader.exec_module(cli)
 PREVIEW_EDGE = 1100
 
 
-def resize_linear(a: np.ndarray, w: int, h: int) -> np.ndarray:
-    """Resample linear float data.  PIL cannot hold 16-bit RGB, and rounding to
-    8 bits before the plugin sees it would throw away tonal range, so each
-    channel is resampled on its own in float mode."""
-    from PIL import Image as PILImage
-
-    out = np.empty((h, w, a.shape[2]), np.float32)
-    for c in range(a.shape[2]):
-        im = PILImage.fromarray(a[..., c].astype(np.float32), mode="F")
-        out[..., c] = np.asarray(im.resize((w, h), PILImage.LANCZOS), np.float32)
-    return out
+# resize_linear lives in the CLI module, so both sides scale previews alike.
 QUICK_GROUPS = ("quickGroup", "managePresetGroup", "colorManagementGroup")
 
 
@@ -118,6 +110,10 @@ class Window(QMainWindow):
         # Only parameters the user actually touched are sent.  Sending them all
         # would re-apply defaults on top of whatever preset was just loaded.
         self.dirty: set[str] = set()
+        # Session parameters with no widget in the panel - the panel shows the
+        # quick controls, but a session may carry any of the 830.  Keeping them
+        # here means importing a session never silently drops settings.
+        self.extra_params: dict[str, str] = {}
         self.syncing = False
 
         self.view = ImageView()
@@ -182,6 +178,28 @@ class Window(QMainWindow):
         row.addWidget(b_save_preset)
         row.addWidget(b_reset)
         pv.addLayout(row)
+
+        # Pinning the seed makes a render reproducible, which is what lets the
+        # CLI replay an exported session byte for byte.
+        seedrow = QHBoxLayout()
+        self.chk_seed = QCheckBox("Pin seed")
+        self.sp_seed = QSpinBox()
+        self.sp_seed.setRange(0, 2147483647)
+        self.sp_seed.setValue(7)
+        self.chk_seed.toggled.connect(self.on_change)
+        self.sp_seed.valueChanged.connect(self.on_change)
+        seedrow.addWidget(self.chk_seed)
+        seedrow.addWidget(self.sp_seed, 1)
+        pv.addLayout(seedrow)
+
+        sessrow = QHBoxLayout()
+        b_exp = QPushButton("Export session…")
+        b_exp.clicked.connect(self.export_session)
+        b_imp = QPushButton("Import session…")
+        b_imp.clicked.connect(self.import_session)
+        sessrow.addWidget(b_exp)
+        sessrow.addWidget(b_imp)
+        pv.addLayout(sessrow)
 
         line = QFrame()
         line.setFrameShape(QFrame.HLine)
@@ -343,9 +361,95 @@ class Window(QMainWindow):
             return str(int(w.value()))
         return f"{w.value():g}"
 
+    def session(self, for_preview: bool = True) -> dict:
+        """Everything this window holds, as the JSON the CLI also speaks."""
+        s = cli.default_session()
+        s["input"] = str(self.source_path) if self.source_path else None
+        s["bundle"] = str(self.rend.bundle)
+        s["preset"] = {"category": self.cb_category.currentText(),
+                       "selection": self.cb_preset.currentText()}
+        s["user_preset"] = (self.cb_user.currentText()
+                            if self.cb_user.currentIndex() > 0 else None)
+        s["input_colorspace"] = self.cb_input.currentText()
+        s["params"] = dict(self.extra_params)
+        s["params"].update({n: self._value_str(n) for n in self.widgets if n in self.dirty})
+        s["seed"] = int(self.sp_seed.value()) if self.chk_seed.isChecked() else None
+        s["preview"] = {"long_edge": PREVIEW_EDGE} if for_preview else None
+        return s
+
     def current_sets(self) -> list[tuple[str, str]]:
-        return self.base_sets() + [(n, self._value_str(n))
-                                   for n in self.widgets if n in self.dirty]
+        return cli.session_to_sets(self.session())
+
+    def apply_session(self, s: dict):
+        """Restore the window from a session, the inverse of session()."""
+        self.syncing = True
+        try:
+            preset = s.get("preset") or {}
+            if preset.get("category"):
+                self.cb_category.setCurrentText(preset["category"])
+                self._refresh_presets()
+            if preset.get("selection"):
+                self.cb_preset.setCurrentText(preset["selection"])
+            if s.get("input_colorspace"):
+                self.cb_input.setCurrentText(s["input_colorspace"])
+            self.cb_user.setCurrentIndex(
+                max(0, self.cb_user.findText(s["user_preset"])) if s.get("user_preset") else 0)
+            self.chk_seed.setChecked(s.get("seed") is not None)
+            if s.get("seed") is not None:
+                self.sp_seed.setValue(int(s["seed"]))
+        finally:
+            self.syncing = False
+
+        self.dirty.clear()
+        self.extra_params.clear()
+        self.sync_widgets()
+        # Re-apply the session's own overrides on top of the preset.
+        self.syncing = True
+        try:
+            for name, value in (s.get("params") or {}).items():
+                entry = self.widgets.get(name)
+                if not entry:
+                    # Not shown in the panel, but it still has to reach the plugin.
+                    self.extra_params[name] = str(value)
+                    continue
+                kind, w = entry
+                w.blockSignals(True)
+                if kind == "bool":
+                    w.setChecked(str(value).lower() in ("1", "true", "yes", "on"))
+                elif kind == "choice":
+                    w.setCurrentText(str(value))
+                else:
+                    w.setValue(float(value))
+                w.blockSignals(False)
+                self.dirty.add(name)
+        finally:
+            self.syncing = False
+
+        if s.get("input"):
+            self.load_path(Path(s["input"]))
+        else:
+            self.on_change()
+
+    def export_session(self):
+        default = str(Path.home() / "spektra-session.json")
+        path, _ = QFileDialog.getSaveFileName(self, "Export session", default,
+                                              "JSON (*.json)")
+        if not path:
+            return
+        Path(path).write_text(json.dumps(self.session(), indent=2) + "\n")
+        self.statusBar().showMessage(f"session -> {path}", 6000)
+
+    def import_session(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Import session",
+                                              str(Path.home()), "JSON (*.json)")
+        if not path:
+            return
+        try:
+            self.apply_session(cli.load_session(path))
+        except SystemExit as e:
+            QMessageBox.warning(self, "spektra", str(e))
+            return
+        self.statusBar().showMessage(f"loaded session {Path(path).name}", 6000)
 
     def on_edit(self, name: str):
         if self.syncing:
@@ -400,11 +504,7 @@ class Window(QMainWindow):
         self.source_path, self.full_linear, self.meta = path, linear, meta
         self.full_render = None
         h, w = linear.shape[:2]
-        scale = min(1.0, PREVIEW_EDGE / max(h, w))
-        if scale < 1.0:
-            self.preview_linear = resize_linear(linear, int(w * scale), int(h * scale))
-        else:
-            self.preview_linear = linear
+        self.preview_linear = cli.resize_linear(linear, PREVIEW_EDGE)
         self.lbl_file.setText(f"{path.name}   {w}×{h}")
         self.settings.setValue("last_dir", str(path.parent))
         self.on_change()
@@ -416,6 +516,7 @@ class Window(QMainWindow):
     def on_preset_change(self):
         # A new preset replaces the whole look, so previous tweaks no longer apply.
         self.dirty.clear()
+        self.extra_params.clear()
         self.sync_widgets()
         self.on_change()
 
@@ -426,6 +527,12 @@ class Window(QMainWindow):
             self.pending = True  # coalesce: re-render once the current one lands
             return
         self.pending = False
+        out = os.environ.get("SPEKTRA_SESSION_OUT")
+        if out:
+            try:
+                Path(out).write_text(json.dumps(self.session(), indent=2) + "\n")
+            except OSError:
+                pass
         self.statusBar().showMessage("rendering preview…")
         self.job = RenderJob(self.rend, self.preview_linear, self.current_sets())
         self.job.done.connect(self.on_rendered)
@@ -464,7 +571,8 @@ class Window(QMainWindow):
         self.statusBar().showMessage(f"rendering {w}×{h}…")
         QApplication.processEvents()
         try:
-            self.full_render = self.rend.render(self.full_linear, self.current_sets())
+            self.full_render = self.rend.render(
+                self.full_linear, cli.session_to_sets(self.session(for_preview=False)))
         except SystemExit as e:
             QMessageBox.warning(self, "spektra", str(e))
             return
@@ -503,6 +611,7 @@ class Window(QMainWindow):
 
     def reset_params(self):
         self.dirty.clear()
+        self.extra_params.clear()
         self.sync_widgets()
         self.on_change()
 
@@ -522,7 +631,11 @@ def main():
     rend = cli.Renderer(cli.find_renderer(), cli.find_bundle(None))
     win = Window(rend)
     if len(sys.argv) > 1:
-        win.load_path(Path(sys.argv[1]))
+        arg = Path(sys.argv[1])
+        if arg.suffix.lower() == ".json":
+            win.apply_session(cli.load_session(str(arg)))
+        else:
+            win.load_path(arg)
     win.show()
     sys.exit(app.exec_())
 

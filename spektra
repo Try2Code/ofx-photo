@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import difflib
 import json
 import os
+import random
 import shutil
 import struct
 import subprocess
@@ -123,6 +125,7 @@ def load_photo(path: Path, raw_linear: bool = True) -> tuple[np.ndarray, str, di
     meta["exif"] = im.info.get("exif")
     meta["icc"] = im.info.get("icc_profile")
     im = apply_orientation(im)
+    im, meta["colour_note"] = to_srgb_profile(im, meta["icc"])
     if im.mode not in ("RGB", "RGBA", "L", "I;16", "I"):
         im = im.convert("RGB")
     a = np.asarray(im)
@@ -171,6 +174,75 @@ def read_deep_tiff(path: Path) -> np.ndarray | None:
         tf.write(r.stdout)
         tf.flush()
         return read_ppm16(Path(tf.name))
+
+
+def to_srgb_profile(im: "Image.Image", icc: bytes | None) -> tuple["Image.Image", str]:
+    """Convert an embedded ICC profile to sRGB.
+
+    Everything downstream assumes sRGB primaries.  A file exported as Adobe RGB
+    or ProPhoto would otherwise be decoded as if it were sRGB, which shifts
+    every colour.  Files that are already sRGB, and files with no profile, are
+    left untouched.
+    """
+    if not icc:
+        return im, "no ICC profile, assumed sRGB"
+    try:
+        import io
+
+        from PIL import ImageCms
+
+        src = ImageCms.ImageCmsProfile(io.BytesIO(icc))
+        name = (ImageCms.getProfileDescription(src) or "").strip()
+        if "srgb" in name.lower().replace(" ", ""):
+            return im, f"ICC {name!r}, already sRGB"
+        if im.mode not in ("RGB", "RGBA"):
+            im = im.convert("RGB")
+        converted = ImageCms.profileToProfile(
+            im, src, ImageCms.createProfile("sRGB"), outputMode=im.mode)
+        if converted is not None:
+            return converted, f"ICC {name!r} converted to sRGB"
+        return im, f"ICC {name!r} could not be converted, assumed sRGB"
+    except Exception as e:  # a broken profile must not stop the render
+        return im, f"ICC profile unreadable ({type(e).__name__}), assumed sRGB"
+
+
+def describe_image(path: Path) -> dict:
+    """Metadata worth seeing when a render looks wrong."""
+    from PIL import ExifTags
+
+    info: dict = {"file": str(path), "bytes": path.stat().st_size}
+    if path.suffix.lower() in RAW_SUFFIXES:
+        info["kind"] = "camera raw"
+    try:
+        im = Image.open(path)
+        info.update(kind=info.get("kind", im.format), size=list(im.size), mode=im.mode)
+        ex = im.getexif()
+        tags = {ExifTags.TAGS.get(k, k): v for k, v in ex.items()}
+        tags.update({ExifTags.TAGS.get(k, k): v
+                     for k, v in ex.get_ifd(0x8769).items()})
+        keep = ("Make", "Model", "LensModel", "DateTimeOriginal", "Orientation",
+                "ColorSpace", "ISOSpeedRatings", "ExposureTime", "FNumber",
+                "FocalLength", "WhiteBalance", "ExposureBiasValue")
+        info["exif"] = {k: str(tags[k]) for k in keep if k in tags}
+        icc = im.info.get("icc_profile")
+        info["icc_bytes"] = len(icc) if icc else 0
+    except Exception as e:
+        info["error"] = f"{type(e).__name__}: {e}"
+
+    try:
+        a, cs, meta = load_photo(path)
+        info["decoded"] = {
+            "shape": list(a.shape),
+            "colourspace_for_plugin": cs,
+            "linear_mean": round(float(a.mean()), 6),
+            "linear_median": round(float(np.median(a)), 6),
+            "linear_p99": round(float(np.percentile(a, 99)), 6),
+            "linear_max": round(float(a.max()), 6),
+            "note": meta.get("colour_note", ""),
+        }
+    except SystemExit as e:
+        info["decoded"] = {"error": str(e)}
+    return info
 
 
 def apply_orientation(im: "Image.Image") -> "Image.Image":
@@ -236,14 +308,40 @@ def load_raw(path: Path) -> np.ndarray:
         return read_ppm16(out[0])
 
 
+def write_ppm16(path: Path, srgb: np.ndarray) -> None:
+    h, w = srgb.shape[:2]
+    arr = np.clip(srgb * 65535.0 + 0.5, 0, 65535).astype(">u2")
+    with open(path, "wb") as f:
+        f.write(b"P6\n%d %d\n65535\n" % (w, h))
+        f.write(arr[..., :3].tobytes())
+
+
+def save_deep(path: Path, srgb: np.ndarray) -> bool:
+    """Write a true 16-bit PNG or TIFF.  False if we could not.
+
+    Pillow cannot write 16-bit RGB: handing it a uint16 array with mode="RGB"
+    silently produces an 8-bit file.  Go through PPM and ImageMagick instead.
+    """
+    convert = shutil.which("convert") or shutil.which("magick")
+    if not convert:
+        return False
+    with tempfile.TemporaryDirectory() as td:
+        ppm = Path(td) / "out.ppm"
+        write_ppm16(ppm, srgb)
+        r = subprocess.run([convert, str(ppm), "-depth", "16", str(path)],
+                           capture_output=True)
+        return r.returncode == 0 and path.exists()
+
+
 def save_photo(path: Path, linear_rgb: np.ndarray, bit_depth: int, quality: int,
                meta: dict) -> None:
     srgb = linear_to_srgb(linear_rgb[..., :3])
     ext = path.suffix.lower()
     if bit_depth == 16 and ext in (".tif", ".tiff", ".png"):
-        arr = np.clip(srgb * 65535.0 + 0.5, 0, 65535).astype(np.uint16)
-        Image.fromarray(arr, mode="RGB" if arr.shape[2] == 3 else "RGBA").save(path)
-        return
+        if save_deep(path, srgb):
+            return
+        print(f"spektra: cannot write 16-bit without ImageMagick; "
+              f"writing {path.name} at 8-bit", file=sys.stderr)
     arr = np.clip(srgb * 255.0 + 0.5, 0, 255).astype(np.uint8)
     im = Image.fromarray(arr)
     kw: dict = {}
@@ -297,6 +395,114 @@ class Renderer:
             return sfraw_read(dst)
 
 
+# -------------------------------------------------------------------- session
+#
+# A session is the whole of what the GUI holds, as JSON.  The GUI can export
+# one and the CLI can replay it exactly, so the internals can be exercised
+# without driving the window.
+
+SESSION_VERSION = 1
+
+# Seeds are randomised for each new plugin instance, so two runs of the same
+# settings differ slightly.  Deriving them all from one integer makes a render
+# byte-for-byte reproducible, which is what automated comparison needs.
+SEED_PARAMS = {
+    "grainSeed": 1000000,
+    "technicolorGrainSeed": 2147483647,
+    "gateWeaveSeed": 2147483647,
+    "timingShiftSeed": 2147483647,
+    "flickerSeed": 2147483647,
+    "dustHairsSeed": 2147483647,
+    "glareSeed": 2147483647,
+}
+
+
+def default_session() -> dict:
+    return {
+        "version": SESSION_VERSION,
+        "input": None,
+        "output": None,
+        "bundle": None,
+        "preset": {"category": None, "selection": None},
+        "user_preset": None,
+        "input_colorspace": "Linear Rec.709",
+        "params": {},
+        "seed": None,
+        "preview": None,
+        "output_options": {"bit_depth": 8, "quality": 95},
+    }
+
+
+def seed_sets(seed) -> list[tuple[str, str]]:
+    if seed is None:
+        return []
+    rng = random.Random(int(seed))
+    return [(n, str(rng.randrange(0, lim))) for n, lim in SEED_PARAMS.items()]
+
+
+def load_session(spec: str) -> dict:
+    """Accept a path, a literal JSON string, or - for stdin."""
+    if spec == "-":
+        text = sys.stdin.read()
+    elif spec.lstrip().startswith("{"):
+        text = spec
+    else:
+        text = Path(spec).expanduser().read_text()
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError as e:
+        sys.exit(f"spektra: session is not valid JSON: {e}")
+    if not isinstance(raw, dict):
+        sys.exit("spektra: a session must be a JSON object")
+    if raw.get("version", SESSION_VERSION) > SESSION_VERSION:
+        sys.exit(f"spektra: session version {raw['version']} is newer than this tool")
+
+    s = default_session()
+    for k, v in raw.items():
+        if isinstance(v, dict) and isinstance(s.get(k), dict):
+            s[k].update(v)
+        else:
+            s[k] = v
+    return s
+
+
+def session_to_sets(session: dict) -> list[tuple[str, str]]:
+    """Turn a session into the ordered parameter list the host wants."""
+    sets: list[tuple[str, str]] = []
+    preset = session.get("preset") or {}
+    if preset.get("category"):
+        sets.append((P_CATEGORY, str(preset["category"])))
+    if preset.get("selection"):
+        sets.append((P_SELECTION, str(preset["selection"])))
+    if session.get("user_preset"):
+        sets += [(P_USER_PRESET, str(session["user_preset"])), (P_LOAD, "")]
+    # After the preset, so explicit settings always win over it.
+    if session.get("input_colorspace"):
+        sets.append((P_INPUT_CS, str(session["input_colorspace"])))
+    sets += seed_sets(session.get("seed"))
+    for name, value in (session.get("params") or {}).items():
+        sets.append((str(name), str(value)))
+    return sets
+
+
+def resize_linear(a: np.ndarray, long_edge: int) -> np.ndarray:
+    """Downscale linear float data, as the GUI preview does.
+
+    Each channel is resampled on its own in float mode: Pillow cannot hold
+    16-bit RGB, and rounding to 8 bits would throw away tonal range.
+    """
+    h, w = a.shape[:2]
+    scale = min(1.0, long_edge / max(h, w))
+    if scale >= 1.0:
+        return a
+    nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
+    out = np.empty((nh, nw, a.shape[2]), np.float32)
+    for c in range(a.shape[2]):
+        im = Image.fromarray(a[..., c].astype(np.float32), mode="F")
+        out[..., c] = np.asarray(im.resize((nw, nh), Image.LANCZOS), np.float32)
+    return out
+
+
 # ---------------------------------------------------------------- preset logic
 
 
@@ -338,29 +544,53 @@ def list_presets(rend: Renderer) -> None:
 # ----------------------------------------------------------------------- main
 
 
-def build_sets(args, rend: Renderer, cs_default: str) -> list[tuple[str, str]]:
-    sets: list[tuple[str, str]] = []
+def session_from_args(args, rend: Renderer) -> dict:
+    """Build a session from the command line, starting from --session if given."""
+    s = load_session(args.session) if args.session else default_session()
+
+    if args.bundle:
+        s["bundle"] = str(args.bundle)
     if args.preset:
-        sets += resolve_preset(rend, args.preset)
+        cat, sel = resolve_preset(rend, args.preset)
+        s["preset"] = {"category": cat[1], "selection": sel[1]}
     if args.user_preset:
-        sets += [(P_USER_PRESET, args.user_preset), (P_LOAD, "")]
-    # After a preset, so an explicit choice always wins.
-    sets.append((P_INPUT_CS, args.input_colorspace or cs_default))
+        s["user_preset"] = args.user_preset
+    if args.input_colorspace:
+        s["input_colorspace"] = args.input_colorspace
+    if args.seed is not None:
+        s["seed"] = args.seed
+    if args.preview is not None:
+        s["preview"] = {"long_edge": args.preview}
     for kv in args.set or []:
         if "=" not in kv:
             sys.exit(f"spektra: --set wants NAME=VALUE, got {kv!r}")
         k, v = kv.split("=", 1)
-        sets.append((k, v))
-    if args.save_preset:
-        sets += [(P_PRESET_NAME, args.save_preset), (P_SAVE, "")]
-    return sets
+        s["params"][k] = v
+    if args.bit_depth is not None:
+        s["output_options"]["bit_depth"] = args.bit_depth
+    if args.quality is not None:
+        s["output_options"]["quality"] = args.quality
+    return s
 
 
-def process_one(rend: Renderer, src: Path, dst: Path, args) -> str:
+def render_session(rend: Renderer, session: dict, src: Path) -> tuple[np.ndarray, dict]:
     linear, cs, meta = load_photo(src)
-    sets = build_sets(args, rend, cs)
-    out = rend.render(linear, sets)
-    save_photo(dst, out, args.bit_depth, args.quality, meta)
+    if not session.get("input_colorspace"):
+        session["input_colorspace"] = cs
+    preview = session.get("preview") or {}
+    if preview.get("long_edge"):
+        linear = resize_linear(linear, int(preview["long_edge"]))
+    return rend.render(linear, session_to_sets(session)), meta
+
+
+def process_one(rend: Renderer, src: Path, dst: Path, session: dict,
+                save_preset: str | None = None) -> str:
+    s = copy.deepcopy(session)
+    out, meta = render_session(rend, s, src)
+    if save_preset:
+        rend.describe(session_to_sets(s) + [(P_PRESET_NAME, save_preset), (P_SAVE, "")])
+    opts = s.get("output_options") or {}
+    save_photo(dst, out, int(opts.get("bit_depth", 8)), int(opts.get("quality", 95)), meta)
     return f"{src.name} -> {dst}"
 
 
@@ -376,6 +606,12 @@ def main() -> None:
   spektra --list-presets
   spektra --list-params --grep grain
   spektra shots/*.NEF outdir/ --preset "Vintage Faded"
+
+  # reproducible renders, and sessions shared with the GUI
+  spektra photo.jpg out.jpg --preset "OIL!" --seed 7 --preview
+  spektra photo.jpg out.jpg --preset "OIL!" --dump-session look.json
+  spektra --session look.json
+  spektra --session '{"input":"a.jpg","output":"b.jpg","seed":7}'
 """,
     )
     ap.add_argument("inputs", nargs="*", type=Path)
@@ -388,15 +624,33 @@ def main() -> None:
     ap.add_argument("--set", action="append", metavar="NAME=VALUE",
                     help="set any plugin parameter (repeatable)")
     ap.add_argument("--input-colorspace", help="override the input colourspace")
-    ap.add_argument("--bit-depth", type=int, default=8, choices=(8, 16))
-    ap.add_argument("--quality", type=int, default=95, help="JPEG quality")
+    ap.add_argument("--bit-depth", type=int, default=None, choices=(8, 16))
+    ap.add_argument("--quality", type=int, default=None, help="JPEG quality")
+    ap.add_argument("--session", metavar="SPEC",
+                    help="load a session: a path, a literal JSON object, or - for stdin")
+    ap.add_argument("--dump-session", nargs="?", const="-", metavar="PATH",
+                    help="write the resolved session as JSON and exit (default stdout)")
+    ap.add_argument("--seed", type=int, metavar="N",
+                    help="pin every random seed, making the render reproducible")
+    ap.add_argument("--preview", nargs="?", type=int, const=1100, metavar="PX",
+                    help="render at the GUI preview size (default 1100 px long edge)")
     ap.add_argument("--jobs", type=int, default=1, help="parallel images")
+    ap.add_argument("--info", action="store_true",
+                    help="report metadata and decoded statistics, then exit")
     ap.add_argument("--list-presets", action="store_true")
     ap.add_argument("--list-params", action="store_true")
     ap.add_argument("--grep", metavar="TEXT", help="filter --list-params")
     args = ap.parse_args()
 
-    rend = Renderer(find_renderer(), find_bundle(args.bundle))
+    pre = load_session(args.session) if args.session else {}
+    rend = Renderer(find_renderer(), find_bundle(args.bundle or pre.get("bundle")))
+
+    if args.info:
+        if not args.inputs:
+            ap.error("--info needs at least one image")
+        paths = list(args.inputs) + ([args.output] if args.output else [])
+        print(json.dumps([describe_image(p) for p in paths], indent=2))
+        return
 
     if args.list_presets:
         list_presets(rend)
@@ -420,8 +674,29 @@ def main() -> None:
                 print(f"{'':34} range {p['min']} .. {p['max']}   now {p['value']}")
         return
 
+    session = session_from_args(args, rend)
+
     # Positional handling: the last path is the destination.
     paths = list(args.inputs) + ([args.output] if args.output else [])
+    if not paths and session.get("input"):
+        paths = [Path(session["input"])]
+        if session.get("output"):
+            paths.append(Path(session["output"]))
+
+    if args.dump_session is not None:
+        if paths:
+            session["input"] = str(paths[0])
+            if len(paths) > 1:
+                session["output"] = str(paths[-1])
+        session["bundle"] = session.get("bundle") or str(rend.bundle)
+        text = json.dumps(session, indent=2)
+        if args.dump_session == "-":
+            print(text)
+        else:
+            Path(args.dump_session).write_text(text + "\n")
+            print(f"session -> {args.dump_session}", file=sys.stderr)
+        return
+
     if len(paths) < 2:
         ap.error("need an input and an output")
     *sources, target = paths
@@ -435,11 +710,11 @@ def main() -> None:
 
     if args.jobs > 1 and len(jobs) > 1:
         with ThreadPoolExecutor(max_workers=args.jobs) as ex:
-            for line in ex.map(lambda j: process_one(rend, j[0], j[1], args), jobs):
+            for line in ex.map(lambda j: process_one(rend, j[0], j[1], session), jobs):
                 print(line)
     else:
         for s, d in jobs:
-            print(process_one(rend, s, d, args))
+            print(process_one(rend, s, d, session, args.save_preset))
 
 
 if __name__ == "__main__":

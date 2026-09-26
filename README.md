@@ -98,13 +98,49 @@ cmake -S . -B build && cmake --build build      # build the host
 
 A 2560×1709 JPEG takes roughly two seconds on integrated graphics.
 
+### Sessions: the GUI as JSON
+
+Everything the window holds is a session, so a look can be exported from the GUI and
+replayed from the terminal, byte for byte:
+
+```sh
+./spektra photo.jpg out.jpg --preset "OIL!" --seed 7 --dump-session look.json
+./spektra --session look.json
+./spektra --session '{"input":"a.jpg","output":"b.jpg","seed":7}'   # or inline
+./spektra --session - < look.json                                   # or stdin
+./spektra-gui look.json                                             # back into the GUI
+```
+
+In the GUI: **Export session…** / **Import session…**, and `SPEKTRA_SESSION_OUT=/tmp/s.json`
+rewrites the session on every preview, so you can watch what the window is doing.
+
+`--seed N` pins every random seed. The plugin randomises grain, gate weave, flicker and
+dust seeds per instance, so without it two runs of the same settings differ slightly;
+with it they are identical, which is what makes automated comparison possible.
+
+`--info` reports EXIF, ICC and the decoded linear statistics — the first thing to check
+when a render looks wrong.
+
+## Tests
+
+```sh
+tests/test_spektra.py                                   # synthetic chart
+tests/test_spektra.py --photo p.jpg --raw p.NEF         # your own files
+tests/test_spektra.py --quick -k session                # narrow it down
+```
+
+50 checks across the host, presets, determinism, parameter overrides, sessions,
+colourspaces, image I/O, raw scaling, ICC handling and the GUI model. The GUI runs
+offscreen, so the whole suite needs no display and no clicking.
+
 Preset names are matched loosely and suggest alternatives when wrong, which helps: the
 real names are easy to mistype (`Chromium-Noir`, `CineStill 800T`, `Marty - Warm`).
 
 ## Notes
 
-**Grain is stochastic.** Two identical renders differ by ~0.0006 mean absolute error.
-That is the film grain, not a bug.
+**Renders vary between runs unless you pin the seed.** The plugin randomises its grain,
+gate weave, flicker and dust seeds for each new instance. `--seed N` fixes all of them
+and makes output byte-for-byte repeatable.
 
 **The preview is downscaled** to 1100 px on the long edge so the controls stay
 responsive. Grain and halation are resolution dependent, so they will not look exactly
@@ -121,8 +157,10 @@ re-apply defaults over whatever preset was just loaded, which silently destroys 
 - [x] `spektra-render` CLI and `.sfraw` I/O (`src/main.cpp`)
 - [x] `spektra` — photo formats, colour handling, presets, batch
 - [x] `spektra-gui` — preview, presets, dynamic parameter panel
+- [x] Session JSON shared by the CLI and the GUI, with reproducible seeds
+- [x] Automated tests that need no display
 - [ ] The `_diffuse` and `_lens` companion plugins
-- [ ] 16-bit and OpenEXR output beyond TIFF/PNG
+- [ ] OpenEXR output
 
 ## Licence
 
