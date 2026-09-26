@@ -1,0 +1,29 @@
+# Build output
+build/
+*.o
+*.so
+compile_commands.json
+
+# Interchange + scratch renders
+*.sfraw
+out/
+scratch/
+
+# Never commit the plugin itself: it is the vendor's to distribute, and its
+# resources exceed GitHub's 100 MB file limit.  Point the tools at an installed
+# copy with --bundle instead.
+*.ofx.bundle/
+*.ofx
+*.f32
+*.spv
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Editors
+.vscode/
+.idea/
+*.swp
