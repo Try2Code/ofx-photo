@@ -1,32 +1,58 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256"
+     role="img" aria-labelledby="title desc">
+  <title id="title">Spektra Photo</title>
+  <desc id="desc">Three subtractive dye layers over a strip of film.</desc>
+
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#2b2b33"/><stop offset="1" stop-color="#14141a"/>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fbfbfd"/>
+      <stop offset="1" stop-color="#e4e4ea"/>
     </linearGradient>
-    <linearGradient id="strip" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0"   stop-color="#e8643c"/>
-      <stop offset="0.45" stop-color="#d8c24a"/>
-      <stop offset="1"   stop-color="#3f9fd6"/>
-    </linearGradient>
+
+    <!-- The dye layers.  Each circle is written out rather than referenced with
+         <use>, because some renderers will not instantiate a <use> of a shape
+         that carries no fill of its own. -->
+    <clipPath id="clipCyan"><circle cx="100" cy="106" r="55"/></clipPath>
+    <clipPath id="clipMagenta"><circle cx="156" cy="106" r="55"/></clipPath>
+    <clipPath id="tileShape"><rect width="256" height="256" rx="56"/></clipPath>
   </defs>
-  <rect width="128" height="128" rx="26" fill="url(#bg)"/>
-  <!-- a length of film: sprocket rails top and bottom, image area between -->
-  <rect x="18" y="30" width="92" height="68" rx="5" fill="url(#strip)"/>
-  <rect x="18" y="30" width="92" height="11" fill="#14141a" opacity="0.72"/>
-  <rect x="18" y="87" width="92" height="11" fill="#14141a" opacity="0.72"/>
-  <g fill="#e9e9ef">
-    <rect x="25" y="33" width="7" height="5" rx="1.4"/>
-    <rect x="41" y="33" width="7" height="5" rx="1.4"/>
-    <rect x="57" y="33" width="7" height="5" rx="1.4"/>
-    <rect x="73" y="33" width="7" height="5" rx="1.4"/>
-    <rect x="89" y="33" width="7" height="5" rx="1.4"/>
-    <rect x="25" y="90" width="7" height="5" rx="1.4"/>
-    <rect x="41" y="90" width="7" height="5" rx="1.4"/>
-    <rect x="57" y="90" width="7" height="5" rx="1.4"/>
-    <rect x="73" y="90" width="7" height="5" rx="1.4"/>
-    <rect x="89" y="90" width="7" height="5" rx="1.4"/>
+
+  <rect width="256" height="256" rx="56" fill="url(#tile)"/>
+
+  <!-- Cyan, magenta and yellow, with every overlap multiplied by hand.
+       mix-blend-mode would be the obvious way to do this and librsvg, which
+       is what the desktop draws icons with, ignores it. -->
+  <g>
+    <circle cx="100" cy="106" r="55" fill="#2ec4e6"/>
+    <circle cx="156" cy="106" r="55" fill="#ea3fa0"/>
+    <circle cx="128" cy="154" r="55" fill="#f2d341"/>
+
+    <g clip-path="url(#clipCyan)">
+      <circle cx="156" cy="106" r="55" fill="#2a3090"/>
+      <circle cx="128" cy="154" r="55" fill="#2ca23b"/>
+    </g>
+    <g clip-path="url(#clipMagenta)">
+      <circle cx="128" cy="154" r="55" fill="#de3429"/>
+    </g>
+    <g clip-path="url(#clipCyan)">
+      <g clip-path="url(#clipMagenta)">
+        <circle cx="128" cy="154" r="55" fill="#282825"/>
+      </g>
+    </g>
   </g>
-  <circle cx="64" cy="64" r="15" fill="#14141a" opacity="0.5"/>
-  <circle cx="64" cy="64" r="15" fill="none" stroke="#f2f2f7" stroke-width="3.5"/>
-  <circle cx="58.5" cy="58.5" r="4" fill="#f2f2f7" opacity="0.85"/>
+
+  <!-- A length of film across the foot, clipped to the tile so it follows the
+       corner radius.  Without it the mark could pass for a paint program. -->
+  <g clip-path="url(#tileShape)">
+    <rect x="0" y="198" width="256" height="58" fill="#18181e"/>
+    <g fill="#fbfbfd">
+      <rect x="12"  y="210" width="20" height="14" rx="3.5"/>
+      <rect x="56"  y="210" width="20" height="14" rx="3.5"/>
+      <rect x="100" y="210" width="20" height="14" rx="3.5"/>
+      <rect x="144" y="210" width="20" height="14" rx="3.5"/>
+      <rect x="188" y="210" width="20" height="14" rx="3.5"/>
+      <rect x="232" y="210" width="20" height="14" rx="3.5"/>
+    </g>
+  </g>
 </svg>
