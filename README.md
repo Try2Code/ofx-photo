@@ -240,6 +240,30 @@ verified no-op**. What they add is running *more than one pass*, as a node graph
 ./spektra photo.jpg out.jpg --bundle diffuse --preset "OIL!"
 ```
 
+### The companion bundles are stripped
+
+`_lens` and `_diffuse` ship **without** the spectral data and without the preset library:
+
+| | `spektrafilm` | `_flow` | `_lens` | `_diffuse` |
+|---|---|---|---|---|
+| `SpektraSpectralUpsampling.f32` (103 MB) | ✅ | ✅ | ✗ | ✗ |
+| `SpektraHanatos2025Spectra.f32` (12 MB) | ✅ | ✅ | ✗ | ✗ |
+| `SpektraOutputGamutCompression.f32` | ✅ | ✅ | ✗ | ✗ |
+| bundled presets | 88 | 88 | 0 | 0 |
+
+Two consequences:
+
+- **`--preset` mostly does not work against `lens` or `diffuse`.** They offer 6 entries
+  rather than 88, so a name from the main library will not resolve. Drive them with
+  `--set` and per-pass `params` instead, which is what `--chain` does anyway.
+- **One unexplained failure.** A save once reported `Unable to locate
+  SpektraHanatos2025Spectra.f32 for Vulkan Hanatos RGB-to-raw`, and the missing files make
+  these bundles the obvious suspect — but that was not reproducible. All four RGB-to-Raw
+  methods, Hanatos included, render from `lens` and `diffuse` here, even with the bundle
+  copied somewhere on its own with no sibling beside it, so the plugin finds the data by
+  some route that is not documented and not the `~/.cache/spektrafilm` pipeline cache. If
+  you hit it, export the session: it can then be replayed exactly.
+
 A pass only bites once its effects are switched on, which is easiest to express in a
 session:
 
