@@ -1,0 +1,531 @@
+#!/usr/bin/env python3
+"""spektra-gui - a small window for applying an OFX film plugin to photos."""
+
+from __future__ import annotations
+
+import importlib.util
+import sys
+from pathlib import Path
+
+import numpy as np
+from PyQt5.QtCore import QSettings, QSize, Qt, QThread, pyqtSignal
+from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtWidgets import (
+    QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
+    QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton,
+    QScrollArea, QSizePolicy, QSlider, QStatusBar, QToolButton, QVBoxLayout,
+    QWidget, QInputDialog,
+)
+
+HERE = Path(__file__).resolve().parent
+
+# Reuse the CLI's plumbing rather than duplicating it.
+_spec = importlib.util.spec_from_loader(
+    "spektra_cli", importlib.machinery.SourceFileLoader("spektra_cli", str(HERE / "spektra"))
+)
+cli = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(cli)
+
+PREVIEW_EDGE = 1100
+
+
+def resize_linear(a: np.ndarray, w: int, h: int) -> np.ndarray:
+    """Resample linear float data.  PIL cannot hold 16-bit RGB, and rounding to
+    8 bits before the plugin sees it would throw away tonal range, so each
+    channel is resampled on its own in float mode."""
+    from PIL import Image as PILImage
+
+    out = np.empty((h, w, a.shape[2]), np.float32)
+    for c in range(a.shape[2]):
+        im = PILImage.fromarray(a[..., c].astype(np.float32), mode="F")
+        out[..., c] = np.asarray(im.resize((w, h), PILImage.LANCZOS), np.float32)
+    return out
+QUICK_GROUPS = ("quickGroup", "managePresetGroup", "colorManagementGroup")
+
+
+# ------------------------------------------------------------- render thread
+
+
+class RenderJob(QThread):
+    done = pyqtSignal(object, str)
+
+    def __init__(self, rend, linear, sets):
+        super().__init__()
+        self.rend, self.linear, self.sets = rend, linear, sets
+
+    def run(self):
+        try:
+            self.done.emit(self.rend.render(self.linear, self.sets), "")
+        except SystemExit as e:
+            self.done.emit(None, str(e))
+        except Exception as e:  # noqa: BLE001 - surface anything to the status bar
+            self.done.emit(None, f"{type(e).__name__}: {e}")
+
+
+# ------------------------------------------------------------- image display
+
+
+class ImageView(QLabel):
+    def __init__(self):
+        super().__init__()
+        self.setAlignment(Qt.AlignCenter)
+        self.setMinimumSize(QSize(480, 320))
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setStyleSheet("background:#121212;border:1px solid #2a2a2a;")
+        self.setText("Open a photo to begin")
+        self._pm: QPixmap | None = None
+
+    def show_array(self, srgb_u8: np.ndarray | None):
+        if srgb_u8 is None:
+            self._pm = None
+            return
+        h, w, _ = srgb_u8.shape
+        img = QImage(srgb_u8.tobytes(), w, h, 3 * w, QImage.Format_RGB888)
+        self._pm = QPixmap.fromImage(img)
+        self._rescale()
+
+    def _rescale(self):
+        if self._pm:
+            self.setPixmap(self._pm.scaled(self.size(), Qt.KeepAspectRatio,
+                                           Qt.SmoothTransformation))
+
+    def resizeEvent(self, e):
+        self._rescale()
+        super().resizeEvent(e)
+
+
+# ------------------------------------------------------------------ main window
+
+
+class Window(QMainWindow):
+    def __init__(self, rend: cli.Renderer):
+        super().__init__()
+        self.rend = rend
+        self.settings = QSettings("ofx-photo", "spektra-gui")
+        self.setWindowTitle("spektra")
+        self.resize(1180, 760)
+
+        self.source_path: Path | None = None
+        self.full_linear: np.ndarray | None = None
+        self.preview_linear: np.ndarray | None = None
+        self.meta: dict = {}
+        self.rendered: np.ndarray | None = None   # linear, preview sized
+        self.full_render: np.ndarray | None = None
+        self.job: RenderJob | None = None
+        self.pending = False
+        self.showing_original = False
+        self.widgets: dict[str, tuple[str, object]] = {}
+        # Only parameters the user actually touched are sent.  Sending them all
+        # would re-apply defaults on top of whatever preset was just loaded.
+        self.dirty: set[str] = set()
+        self.syncing = False
+
+        self.view = ImageView()
+        self._build_ui()
+        self._restore()
+
+    # ---- construction
+
+    def _build_ui(self):
+        root = QWidget()
+        lay = QHBoxLayout(root)
+        lay.setContentsMargins(8, 8, 8, 8)
+
+        left = QVBoxLayout()
+        bar = QHBoxLayout()
+        b_open = QPushButton("Open…")
+        b_open.clicked.connect(self.open_photo)
+        self.lbl_file = QLabel("no photo")
+        self.lbl_file.setStyleSheet("color:#999;")
+        bar.addWidget(b_open)
+        bar.addWidget(self.lbl_file, 1)
+        b_cmp = QPushButton("Hold to compare")
+        b_cmp.pressed.connect(lambda: self._show_original(True))
+        b_cmp.released.connect(lambda: self._show_original(False))
+        bar.addWidget(b_cmp)
+        left.addLayout(bar)
+        left.addWidget(self.view, 1)
+
+        out = QHBoxLayout()
+        self.b_full = QPushButton("Render full resolution")
+        self.b_full.clicked.connect(self.render_full)
+        self.b_save = QPushButton("Save image…")
+        self.b_save.clicked.connect(self.save_image)
+        out.addWidget(self.b_full)
+        out.addWidget(self.b_save)
+        left.addLayout(out)
+        lay.addLayout(left, 3)
+
+        # ---- right hand control panel
+        panel = QWidget()
+        panel.setMaximumWidth(400)
+        pv = QVBoxLayout(panel)
+
+        form = QFormLayout()
+        self.cb_category = QComboBox()
+        self.cb_preset = QComboBox()
+        self.cb_user = QComboBox()
+        self.cb_input = QComboBox()
+        for w in (self.cb_category, self.cb_preset, self.cb_user, self.cb_input):
+            w.setMaxVisibleItems(25)
+        form.addRow("Category", self.cb_category)
+        form.addRow("Preset", self.cb_preset)
+        form.addRow("Yours", self.cb_user)
+        form.addRow("Input", self.cb_input)
+        pv.addLayout(form)
+
+        row = QHBoxLayout()
+        b_save_preset = QPushButton("Save preset…")
+        b_save_preset.clicked.connect(self.save_preset)
+        b_reset = QPushButton("Reset")
+        b_reset.clicked.connect(self.reset_params)
+        row.addWidget(b_save_preset)
+        row.addWidget(b_reset)
+        pv.addLayout(row)
+
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setStyleSheet("color:#333;")
+        pv.addWidget(line)
+
+        self.chk_all = QCheckBox("Show every parameter (830)")
+        self.chk_all.toggled.connect(self.rebuild_params)
+        pv.addWidget(self.chk_all)
+
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.param_host = QWidget()
+        self.param_layout = QVBoxLayout(self.param_host)
+        self.param_layout.setAlignment(Qt.AlignTop)
+        self.scroll.setWidget(self.param_host)
+        pv.addWidget(self.scroll, 1)
+
+        lay.addWidget(panel, 1)
+        self.setCentralWidget(root)
+        self.setStatusBar(QStatusBar())
+
+        self._load_choices()
+        self.cb_category.currentTextChanged.connect(self.on_category)
+        self.cb_preset.currentTextChanged.connect(self.on_preset_change)
+        self.cb_user.currentTextChanged.connect(self.on_preset_change)
+        self.cb_input.currentTextChanged.connect(self.on_change)
+        self.rebuild_params()
+
+    def _load_choices(self):
+        p = self.rend.by_name()
+        self.cb_category.addItems(p[cli.P_CATEGORY]["choices"])
+        self.cb_input.addItems(p[cli.P_INPUT_CS]["choices"])
+        idx = self.cb_input.findText("Linear Rec.709")
+        if idx >= 0:
+            self.cb_input.setCurrentIndex(idx)
+        self._refresh_presets()
+        self._refresh_user()
+
+    def _refresh_presets(self):
+        cat = self.cb_category.currentText()
+        names = self.rend.by_name([(cli.P_CATEGORY, cat)])[cli.P_SELECTION]["choices"]
+        self.cb_preset.blockSignals(True)
+        self.cb_preset.clear()
+        self.cb_preset.addItems(names)
+        self.cb_preset.blockSignals(False)
+
+    def _refresh_user(self):
+        names = self.rend.by_name()[cli.P_USER_PRESET]["choices"]
+        self.cb_user.blockSignals(True)
+        self.cb_user.clear()
+        self.cb_user.addItems(["(none)"] + [n for n in names if n != "No presets found"])
+        self.cb_user.blockSignals(False)
+
+    # ---- parameter panel, built from what the plugin reports
+
+    def rebuild_params(self):
+        while self.param_layout.count():
+            item = self.param_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self.widgets.clear()
+
+        params = self.rend.params
+        groups = {p["name"]: p["label"] for p in params if p["type"] == "OfxParamTypeGroup"}
+        show_all = self.chk_all.isChecked()
+
+        current = None
+        form = None
+        for p in params:
+            if p["type"] in ("OfxParamTypeGroup", "OfxParamTypePushButton"):
+                continue
+            if p.get("secret"):
+                continue
+            if not show_all and not p["name"].startswith("quick"):
+                continue
+            if p["name"] in (cli.P_CATEGORY, cli.P_SELECTION, cli.P_USER_PRESET,
+                             cli.P_INPUT_CS, cli.P_PRESET_NAME):
+                continue
+
+            parent = p.get("parent") or ""
+            if parent != current:
+                current = parent
+                head = QLabel(groups.get(parent, parent or "General"))
+                head.setStyleSheet("color:#8ab4f8;font-weight:bold;margin-top:8px;")
+                self.param_layout.addWidget(head)
+                holder = QWidget()
+                form = QFormLayout(holder)
+                form.setContentsMargins(4, 0, 0, 0)
+                self.param_layout.addWidget(holder)
+
+            w = self._widget_for(p)
+            if w is not None and form is not None:
+                form.addRow(p["label"], w)
+
+        if not self.widgets:
+            self.param_layout.addWidget(QLabel("No quick parameters; tick the box above."))
+        else:
+            self.sync_widgets()
+
+    def _widget_for(self, p):
+        t, name = p["type"], p["name"]
+        if t == "OfxParamTypeBoolean":
+            w = QCheckBox()
+            w.setChecked(bool(p["value"][0]))
+            w.setToolTip(p.get("hint", ""))
+            w.toggled.connect(lambda _, n=name: self.on_edit(n))
+            self.widgets[name] = ("bool", w)
+            return w
+        if t == "OfxParamTypeChoice":
+            w = QComboBox()
+            w.addItems(p["choices"])
+            w.setCurrentIndex(min(p["value"], len(p["choices"]) - 1))
+            w.setToolTip(p.get("hint", ""))
+            w.currentIndexChanged.connect(lambda _, n=name: self.on_edit(n))
+            self.widgets[name] = ("choice", w)
+            return w
+        if t == "OfxParamTypeDouble":
+            w = QDoubleSpinBox()
+            lo = p.get("displayMin", p.get("min", -1e6))
+            hi = p.get("displayMax", p.get("max", 1e6))
+            lo, hi = max(lo, -1e6), min(hi, 1e6)
+            w.setRange(lo, hi)
+            w.setDecimals(3)
+            w.setSingleStep(max((hi - lo) / 100.0, 0.001))
+            w.setValue(p["value"][0])
+            w.setToolTip(p.get("hint", ""))
+            w.valueChanged.connect(lambda _, n=name: self.on_edit(n))
+            self.widgets[name] = ("double", w)
+            return w
+        if t == "OfxParamTypeInteger":
+            w = QDoubleSpinBox()
+            w.setDecimals(0)
+            w.setRange(max(p.get("min", -1e6), -1e6), min(p.get("max", 1e6), 1e6))
+            w.setValue(p["value"][0])
+            w.valueChanged.connect(lambda _, n=name: self.on_edit(n))
+            self.widgets[name] = ("int", w)
+            return w
+        return None
+
+    # ---- gathering the parameter list for a render
+
+    def base_sets(self) -> list[tuple[str, str]]:
+        """Preset and colourspace: everything that defines the starting point."""
+        sets = [(cli.P_CATEGORY, self.cb_category.currentText()),
+                (cli.P_SELECTION, self.cb_preset.currentText())]
+        if self.cb_user.currentIndex() > 0:
+            sets += [(cli.P_USER_PRESET, self.cb_user.currentText()), (cli.P_LOAD, "")]
+        sets.append((cli.P_INPUT_CS, self.cb_input.currentText()))
+        return sets
+
+    def _value_str(self, name: str) -> str:
+        kind, w = self.widgets[name]
+        if kind == "bool":
+            return "true" if w.isChecked() else "false"
+        if kind == "choice":
+            return w.currentText()
+        if kind == "int":
+            return str(int(w.value()))
+        return f"{w.value():g}"
+
+    def current_sets(self) -> list[tuple[str, str]]:
+        return self.base_sets() + [(n, self._value_str(n))
+                                   for n in self.widgets if n in self.dirty]
+
+    def on_edit(self, name: str):
+        if self.syncing:
+            return
+        self.dirty.add(name)
+        self.on_change()
+
+    def sync_widgets(self):
+        """Pull the values the preset actually produced back into the panel."""
+        if not self.widgets:
+            return
+        state = self.rend.by_name(self.base_sets())
+        self.syncing = True
+        try:
+            for name, (kind, w) in self.widgets.items():
+                p = state.get(name)
+                if p is None or name in self.dirty:
+                    continue
+                w.blockSignals(True)
+                if kind == "bool":
+                    w.setChecked(bool(p["value"][0]))
+                elif kind == "choice":
+                    if p["value"] < w.count():
+                        w.setCurrentIndex(p["value"])
+                else:
+                    w.setValue(p["value"][0])
+                w.blockSignals(False)
+        finally:
+            self.syncing = False
+
+    # ---- actions
+
+    def open_photo(self):
+        start = self.settings.value("last_dir", str(Path.home()))
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open a photo", start,
+            "Photos (*.jpg *.jpeg *.png *.tif *.tiff *.JPG *.NEF *.CR2 *.CR3 *.ARW "
+            "*.DNG *.RAF *.RW2 *.ORF);;All files (*)")
+        if not path:
+            return
+        self.load_path(Path(path))
+
+    def load_path(self, path: Path):
+        self.statusBar().showMessage(f"reading {path.name}…")
+        QApplication.processEvents()
+        try:
+            linear, _, meta = cli.load_photo(path)
+        except SystemExit as e:
+            QMessageBox.warning(self, "spektra", str(e))
+            self.statusBar().clearMessage()
+            return
+        self.source_path, self.full_linear, self.meta = path, linear, meta
+        self.full_render = None
+        h, w = linear.shape[:2]
+        scale = min(1.0, PREVIEW_EDGE / max(h, w))
+        if scale < 1.0:
+            self.preview_linear = resize_linear(linear, int(w * scale), int(h * scale))
+        else:
+            self.preview_linear = linear
+        self.lbl_file.setText(f"{path.name}   {w}×{h}")
+        self.settings.setValue("last_dir", str(path.parent))
+        self.on_change()
+
+    def on_category(self):
+        self._refresh_presets()
+        self.on_preset_change()
+
+    def on_preset_change(self):
+        # A new preset replaces the whole look, so previous tweaks no longer apply.
+        self.dirty.clear()
+        self.sync_widgets()
+        self.on_change()
+
+    def on_change(self):
+        if self.preview_linear is None:
+            return
+        if self.job and self.job.isRunning():
+            self.pending = True  # coalesce: re-render once the current one lands
+            return
+        self.pending = False
+        self.statusBar().showMessage("rendering preview…")
+        self.job = RenderJob(self.rend, self.preview_linear, self.current_sets())
+        self.job.done.connect(self.on_rendered)
+        self.job.start()
+
+    def on_rendered(self, result, err):
+        if err:
+            self.statusBar().showMessage(err[:200])
+        elif self.pending:
+            # Settings changed while this was rendering, so it is already out of
+            # date.  Drop it rather than briefly showing a stale preview.
+            pass
+        else:
+            self.rendered = result
+            if not self.showing_original:
+                self._display(result)
+            self.statusBar().showMessage("preview ready", 2000)
+        if self.pending:
+            self.on_change()
+
+    def _display(self, linear):
+        u8 = (cli.linear_to_srgb(linear[..., :3]) * 255.0 + 0.5).astype(np.uint8)
+        self.view.show_array(np.ascontiguousarray(u8))
+
+    def _show_original(self, on):
+        self.showing_original = on
+        if on and self.preview_linear is not None:
+            self._display(self.preview_linear)
+        elif self.rendered is not None:
+            self._display(self.rendered)
+
+    def render_full(self):
+        if self.full_linear is None:
+            return
+        h, w = self.full_linear.shape[:2]
+        self.statusBar().showMessage(f"rendering {w}×{h}…")
+        QApplication.processEvents()
+        try:
+            self.full_render = self.rend.render(self.full_linear, self.current_sets())
+        except SystemExit as e:
+            QMessageBox.warning(self, "spektra", str(e))
+            return
+        self._display(self.full_render)
+        self.statusBar().showMessage(f"full resolution {w}×{h} ready", 4000)
+
+    def save_image(self):
+        if self.full_linear is None:
+            return
+        default = str(self.source_path.with_name(self.source_path.stem + "_spektra.jpg"))
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save image", default,
+            "JPEG (*.jpg);;PNG 16-bit (*.png);;TIFF 16-bit (*.tif)")
+        if not path:
+            return
+        path = Path(path)
+        if self.full_render is None:
+            self.render_full()
+        depth = 8 if path.suffix.lower() in (".jpg", ".jpeg") else 16
+        cli.save_photo(path, self.full_render, depth, 95, self.meta)
+        self.statusBar().showMessage(f"saved {path}", 5000)
+
+    def save_preset(self):
+        name, ok = QInputDialog.getText(self, "Save preset", "Name for this look:")
+        if not ok or not name.strip():
+            return
+        sets = self.current_sets() + [(cli.P_PRESET_NAME, name.strip()),
+                                      (cli.P_SAVE, "")]
+        try:
+            self.rend.describe(sets)  # cheapest way to run the actions
+        except SystemExit as e:
+            QMessageBox.warning(self, "spektra", str(e))
+            return
+        self._refresh_user()
+        self.statusBar().showMessage(f"saved preset {name!r}", 5000)
+
+    def reset_params(self):
+        self.dirty.clear()
+        self.sync_widgets()
+        self.on_change()
+
+    def _restore(self):
+        g = self.settings.value("geometry")
+        if g:
+            self.restoreGeometry(g)
+
+    def closeEvent(self, e):
+        self.settings.setValue("geometry", self.saveGeometry())
+        super().closeEvent(e)
+
+
+def main():
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    rend = cli.Renderer(cli.find_renderer(), cli.find_bundle(None))
+    win = Window(rend)
+    if len(sys.argv) > 1:
+        win.load_path(Path(sys.argv[1]))
+    win.show()
+    sys.exit(app.exec_())
+
+
+if __name__ == "__main__":
+    main()

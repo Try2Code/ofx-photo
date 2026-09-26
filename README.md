@@ -8,9 +8,8 @@ Linux, where the vendor ships the plugin but the standalone photo application is
 only, and the documented hosts (DaVinci Resolve Studio, Nuke) are expensive video tools
 that are awkward for single images.
 
-> **Status: work in progress — this does not build yet.**
-> The OFX suites and host scaffolding are written; the action sequence, CLI and GUI are
-> not. See the roadmap below.
+> **Status: working.** Verified against spektrafilm v0.2 on Intel Iris Xe / Mesa Vulkan:
+> 830 parameters, all 88 bundled presets, and preset save/load round-trips.
 
 ## Why this exists
 
@@ -83,14 +82,47 @@ and exposed as ordinary OFX parameters. This project therefore contains no prese
 serialisation code at all — it sets a dropdown and presses a button. Presets saved here
 are standard `.spkpreset` files and remain usable in any other host.
 
+## Usage
+
+```sh
+cmake -S . -B build && cmake --build build      # build the host
+
+./spektra --list-presets                        # 88 bundled, plus your own
+./spektra --list-params --grep grain            # search 830 parameters
+./spektra photo.jpg out.jpg --preset "Marty - Warm"
+./spektra photo.NEF out.tif --preset "CineStill 800T" --bit-depth 16
+./spektra photo.jpg out.jpg --set technicolorGrainAmount=1.7
+./spektra shots/*.NEF outdir/ --preset "Vintage Faded" --jobs 2
+./spektra-gui photo.jpg                         # the window
+```
+
+A 2560×1709 JPEG takes roughly two seconds on integrated graphics.
+
+Preset names are matched loosely and suggest alternatives when wrong, which helps: the
+real names are easy to mistype (`Chromium-Noir`, `CineStill 800T`, `Marty - Warm`).
+
+## Notes
+
+**Grain is stochastic.** Two identical renders differ by ~0.0006 mean absolute error.
+That is the film grain, not a bug.
+
+**The preview is downscaled** to 1100 px on the long edge so the controls stay
+responsive. Grain and halation are resolution dependent, so they will not look exactly
+like the full render — use **Render full resolution** before saving to check.
+
+**Only parameters you actually change are sent** to the plugin. Sending them all would
+re-apply defaults over whatever preset was just loaded, which silently destroys the look.
+
 ## Roadmap
 
 - [x] OFX property sets, parameter, clip and image model (`src/host.h`)
 - [x] All 7 OFX suites (`src/suites.cpp`)
-- [ ] Action sequence: load → describe → createInstance → render (`src/host.cpp`)
-- [ ] `spektra-render` CLI and `.sfraw` I/O (`src/main.cpp`)
-- [ ] `spektra` — photo formats, colour handling, presets, batch
-- [ ] `spektra-gui` — preview, presets, dynamic parameter panel
+- [x] Action sequence: load → describe → createInstance → render (`src/host.cpp`)
+- [x] `spektra-render` CLI and `.sfraw` I/O (`src/main.cpp`)
+- [x] `spektra` — photo formats, colour handling, presets, batch
+- [x] `spektra-gui` — preview, presets, dynamic parameter panel
+- [ ] The `_diffuse` and `_lens` companion plugins
+- [ ] 16-bit and OpenEXR output beyond TIFF/PNG
 
 ## Licence
 
