@@ -175,7 +175,11 @@ Numeric parameters are **sliders** with a value readout and a ↺ button that re
 to whatever the preset said. The button greys out when the value is already there, so you
 can see at a glance what you have changed.
 
-The controls sit in five tabs, following the upstream spektrafilm GUI:
+The controls sit in five tabs. That arrangement is **not mine**: it is taken from the
+napari GUI in Andrea Volpato's
+[spektrafilm](https://github.com/andreavolpato/spektrafilm), which divides its controls
+the same way. Tried against one long scrolling column, his grouping read better, so this
+follows it.
 
 | Tab | Holds |
 |---|---|
@@ -525,15 +529,26 @@ Both paths go through PPM and ImageMagick instead. Worth remembering if you exte
 
 | | |
 |---|---|
-| **spektrafilm** — the plugin this hosts | [spektrafilm.114c.de](https://spektrafilm.114c.de/) |
-| its source, GPL-3.0, by Aedan Diez | [github.com/andreavolpato/spektrafilm](https://github.com/andreavolpato/spektrafilm) |
+| **spektrafilm** — the OFX plugin this hosts, by Aedan Diez | [spektrafilm.114c.de](https://spektrafilm.114c.de/) |
+| **spektrafilm** — the spectral engine and napari GUI it came from, by Andrea Volpato, GPL-3.0 | [github.com/andreavolpato/spektrafilm](https://github.com/andreavolpato/spektrafilm) |
 | downloads, including the Linux build | [spektrafilm.114c.de/#download](https://spektrafilm.114c.de/#download) |
 | the plugin's own manual | `manual.pdf`, inside the bundle's `Contents/Resources` |
 | **OpenFX** — the API being implemented | [openeffects.org](https://openeffects.org/) · [github.com/AcademySoftwareFoundation/openfx](https://github.com/AcademySoftwareFoundation/openfx) |
 
-All the film science, the spectral data and the 88 presets are the plugin's work. This
-repository contributes only the host around it: the OFX suites, the render loop, the
-photo I/O, and the two front ends.
+All the film science, the spectral data and the 88 presets are the plugin's work, which in
+turn rests on Andrea Volpato's spectral research project. **The five-tab layout is his
+too**, taken from that project's napari GUI after comparing it against a single scrolling
+column.
+
+This repository contributes only the host around all that: the OFX suites, the render
+loop, the photo I/O, and the two front ends. It shares no code with the research project —
+that GUI is Python and napari, runs natively on Linux already, and is worth using in its
+own right:
+
+```sh
+uv tool install --python 3.13 git+https://github.com/andreavolpato/spektrafilm.git
+spektrafilm
+```
 
 ## Licence
 

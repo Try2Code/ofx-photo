@@ -50,7 +50,9 @@ SUPPORTED_SUFFIXES = ({".jpg", ".jpeg", ".png", ".tif", ".tiff", ".json"}
 # come first.
 LAST_GROUPS = ("effectsGroup",)
 
-# The plugin's groups dealt into five tabs, after the upstream spektrafilm GUI.
+# The plugin's groups dealt into five tabs.  The arrangement is Andrea
+# Volpato's, from the napari GUI in github.com/andreavolpato/spektrafilm,
+# which divides its controls MAIN / FILM / PRINT / ADVANCED / CONFIG.
 # Its parameter set is wider than the research project's -- all the lens and
 # film-damage work has no counterpart there -- so that goes under ADVANCED
 # rather than inventing a sixth tab.
