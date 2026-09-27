@@ -520,6 +520,48 @@ def test_tabbed_layout(h: Harness):
           f"{len(w.widgets)} vs {len(c.widgets)}")
 
 
+def test_compare_shows_the_original(h: Harness):
+    """Hold-to-compare must show the file, not a re-encoded version of it.
+
+    The render comes back display-encoded and the source is held linear, so
+    the two go to screen by different routes.  Encoding the source twice
+    would lift midtones by about 0.18 and still look plausible.
+    """
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PyQt5.QtWidgets import QApplication
+    except ImportError:
+        results.append(("skip", "compare view", "PyQt5 not installed"))
+        print("  skip compare view   (PyQt5 not installed)")
+        return
+    from PIL import Image
+
+    spec = importlib.util.spec_from_loader(
+        "gui", importlib.machinery.SourceFileLoader("gui", str(ROOT / "spektra-gui")))
+    gui = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gui)
+
+    app = QApplication.instance() or QApplication([])
+    w = gui.Window(h.rend)
+    w.load_path(h.photo)
+
+    # exactly what _display(..., encoded=False) sends to the screen
+    shown = np.clip(cli.linear_to_srgb(w.preview_linear[..., :3]), 0, 1)
+
+    src = np.asarray(Image.open(h.photo).convert("RGB")).astype(np.float32) / 255.0
+    src = cli.resize_linear(src, gui.PREVIEW_EDGE)
+    rows = min(shown.shape[0], src.shape[0])
+    cols = min(shown.shape[1], src.shape[1])
+    a, b = shown[:rows, :cols], src[:rows, :cols]
+
+    check("the compare view matches the file on disk",
+          abs(float(a.mean()) - float(b.mean())) < 0.02,
+          "shown %.4f vs file %.4f" % (a.mean(), b.mean()))
+    twice = float(np.clip(cli.linear_to_srgb(a), 0, 1).mean())
+    check("and is not the double-encoded version",
+          abs(float(a.mean()) - twice) > 0.05, "double encode would be %.4f" % twice)
+
+
 def test_push_buttons(h: Harness):
     """Push buttons must be shown, and must not pretend to hold a value.
 
@@ -944,6 +986,7 @@ def main():
         ("encoding", lambda: test_output_encoding(h)),
         ("gui", lambda: test_gui_model(h)),
         ("tabs", lambda: test_tabbed_layout(h)),
+        ("compare", lambda: test_compare_shows_the_original(h)),
         ("buttons", lambda: test_push_buttons(h)),
     ]
 
