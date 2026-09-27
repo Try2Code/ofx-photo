@@ -465,42 +465,47 @@ def test_metadata(h: Harness):
     check("metadata is JSON-serialisable", bool(json.dumps(info)))
 
 
-def test_tabbed_variant(h: Harness):
-    """The five-tab variant must place every group, not quietly drop one."""
+def test_tabbed_layout(h: Harness):
+    """The default five-tab panel must place every group, not quietly drop one."""
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     try:
         from PyQt5.QtWidgets import QApplication, QTabWidget, QToolButton
     except ImportError:
-        results.append(("skip", "tabbed variant", "PyQt5 not installed"))
-        print("  skip tabbed variant   (PyQt5 not installed)")
+        results.append(("skip", "tabbed layout", "PyQt5 not installed"))
+        print("  skip tabbed layout   (PyQt5 not installed)")
         return
 
     spec = importlib.util.spec_from_loader(
-        "gt", importlib.machinery.SourceFileLoader("gt", str(ROOT / "spektra-gui-tabs")))
-    gt = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(gt)
+        "gui", importlib.machinery.SourceFileLoader("gui", str(ROOT / "spektra-gui")))
+    gui = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gui)
 
     app = QApplication.instance() or QApplication([])
-    w = gt.TabbedWindow(h.rend)
+
+    def heads(w):
+        return [x for x in w.param_host.findChildren(QToolButton)
+                if x.objectName() == "groupHead"]
+
+    w = gui.Window(h.rend)
     w.chk_all.setChecked(True)
-
-    tabs = w.param_host.findChildren(QTabWidget)[0]
-    titles = [tabs.tabText(i) for i in range(tabs.count())]
-    check("the five upstream tabs are present",
+    found = w.param_host.findChildren(QTabWidget)
+    check("tabs are the default layout", bool(found))
+    if not found:
+        return
+    titles = [found[0].tabText(i) for i in range(found[0].count())]
+    check("the five tabs are present",
           titles[:5] == ["MAIN", "FILM", "PRINT", "ADVANCED", "CONFIG"], str(titles))
-    check("no group needed an OTHER tab", "OTHER" not in titles,
-          "leftover groups were not mapped" if "OTHER" in titles else "")
+    check("no group needed an OTHER tab", "OTHER" not in titles, str(titles))
 
-    placed = sum(len([x for x in tabs.widget(i).findChildren(QToolButton)
-                      if x.objectName() == "groupHead"]) for i in range(tabs.count()))
-    plain = gt.base.Window(h.rend)
-    plain.chk_all.setChecked(True)
-    expected = len([x for x in plain.param_host.findChildren(QToolButton)
-                    if x.objectName() == "groupHead"])
-    check("it shows as many groups as the single-column panel",
-          placed == expected, f"{placed} tabbed vs {expected} plain")
-    check("and as many controls", len(w.widgets) == len(plain.widgets),
-          f"{len(w.widgets)} vs {len(plain.widgets)}")
+    # The single column is still reachable, and must show exactly the same.
+    c = gui.Window(h.rend)
+    c.tabbed = False
+    c.rebuild_params()
+    c.chk_all.setChecked(True)
+    check("--single-column shows the same groups",
+          len(heads(w)) == len(heads(c)), f"{len(heads(w))} vs {len(heads(c))}")
+    check("and the same controls", len(w.widgets) == len(c.widgets),
+          f"{len(w.widgets)} vs {len(c.widgets)}")
 
 
 def test_gui_model(h: Harness):
@@ -542,8 +547,17 @@ def test_gui_model(h: Harness):
     for wanted in ("Quick Access", "Color Management", "Film", "Print", "Grain"):
         check(f"{wanted!r} shown by default", wanted in titles)
     check("Normalize W/B is reachable by default", "rcmFullRange" in w.widgets)
-    check("Effects sits at the bottom", titles[-1] == "Effects",
-          " -> ".join(titles))
+    # Effects is a long list of optional extras, so in the single column it
+    # sorts last.  Under the default tabs it lives inside ADVANCED instead,
+    # where the ordering assertion would mean nothing.
+    col = gui.Window(h.rend)
+    col.tabbed = False
+    col.rebuild_params()
+    col_titles = [x.text().rsplit("  (", 1)[0]
+                  for x in col.param_host.findChildren(QToolButton)
+                  if x.objectName() == "groupHead"]
+    check("Effects sits at the bottom of the single column",
+          col_titles[-1] == "Effects", " -> ".join(col_titles))
     check("Output Role is withheld, the writers cannot do HDR",
           "outputRole" not in w.widgets)
 
@@ -874,7 +888,7 @@ def main():
         ("chain", lambda: test_chain(h)),
         ("encoding", lambda: test_output_encoding(h)),
         ("gui", lambda: test_gui_model(h)),
-        ("tabs", lambda: test_tabbed_variant(h)),
+        ("tabs", lambda: test_tabbed_layout(h)),
     ]
 
     for name, fn in offline + (suite if h else []):

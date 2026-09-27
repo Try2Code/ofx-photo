@@ -29,7 +29,7 @@ install(TARGETS spektra-render RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 # The two front ends sit beside the host binary; spektra locates
 # spektra-render next to itself, and spektra-gui imports spektra the same way.
-install(PROGRAMS spektra spektra-gui spektra-gui-tabs DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(PROGRAMS spektra spektra-gui DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 # Desktop entry, pointed at wherever this prefix put the launcher.
 set(OFX_PHOTO_EXEC "${CMAKE_INSTALL_FULL_BINDIR}/spektra-gui")

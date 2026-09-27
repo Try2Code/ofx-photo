@@ -17,8 +17,8 @@ from PyQt5.QtGui import QColor, QIcon, QImage, QPalette, QPixmap
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
     QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton,
-    QScrollArea, QSizePolicy, QSlider, QSpinBox, QStatusBar, QToolButton,
-    QVBoxLayout, QWidget, QInputDialog,
+    QScrollArea, QSizePolicy, QSlider, QSpinBox, QStatusBar, QTabWidget,
+    QToolButton, QVBoxLayout, QWidget, QInputDialog,
 )
 
 HERE = Path(__file__).resolve().parent
@@ -45,6 +45,27 @@ SUPPORTED_SUFFIXES = ({".jpg", ".jpeg", ".png", ".tif", ".tiff", ".json"}
 # them in.  Effects is a long list of optional extras, so the film controls
 # come first.
 LAST_GROUPS = ("effectsGroup",)
+
+# The plugin's groups dealt into five tabs, after the upstream spektrafilm GUI.
+# Its parameter set is wider than the research project's -- all the lens and
+# film-damage work has no counterpart there -- so that goes under ADVANCED
+# rather than inventing a sixth tab.
+TABS: list[tuple[str, tuple[str, ...]]] = [
+    ("MAIN", ("quickAccessGroup", "colorGroup", "filmGroup", "scannerGroup",
+              "dirGammaGroup", "infoGroup")),
+    ("FILM", ("grainGroup", "halationGroup", "diffusionGroup", "couplerGroup",
+              "dirSharpeningGroup", "advancedFilmChemistryGroup",
+              "filteringGroup", "filmPlaneGroup")),
+    ("PRINT", ("printGroup", "advancedPrintChemistryGroup",
+               "illuminantTransferGroup")),
+    ("ADVANCED", ("tetraGroup", "tetraProtectionsGroup", "colorAdaptationGroup",
+                  "effectsGroup", "lensDistortionGroup", "vignetteGroup",
+                  "bokehGroup", "comaGroup", "chromaticAberrationGroup",
+                  "filmGateGroup", "gateWeaveGroup", "flickerBreathingGroup",
+                  "timingShiftGroup")),
+    ("CONFIG", ("managePresetGroup", "manageLutGroup", "manageGroup",
+                "manageBackendGroup")),
+]
 
 # Parameters the pipeline owns.  Input and output colourspaces are set from the
 # session, and Output Role would switch the plugin to an HDR transfer that the
@@ -282,6 +303,7 @@ class Window(QMainWindow):
         self.pending = False
         self.showing_original = False
         self.theme = "dark"
+        self.tabbed = True
         self.widgets: dict[str, tuple[str, object]] = {}
         self.wheel_guard = WheelGuard()
         self.group_open: dict[str, bool] = {}
@@ -535,66 +557,124 @@ class Window(QMainWindow):
                 continue
             sections.setdefault(p.get("parent") or "", []).append(p)
 
+        if self.tabbed:
+            self._lay_out_tabs(sections, groups, show_all)
+        else:
+            self._lay_out_column(sections, groups, show_all)
+
+        if not self.widgets:
+            self.param_layout.addWidget(
+                QLabel("No quick parameters; tick the box above."))
+        else:
+            self.sync_widgets()
+
+    def _lay_out_tabs(self, sections, groups, show_all):
+        """Five tabs, after the upstream spektrafilm GUI."""
+        tabs = QTabWidget()
+        tabs.setObjectName("controlsTabWidget")
+        tabs.setDocumentMode(True)
+        tabs.setUsesScrollButtons(False)
+        tabs.tabBar().setDrawBase(False)
+
+        placed: set[str] = set()
+        for title, members in TABS:
+            present = [g for g in members if sections.get(g)]
+            placed.update(present)
+            tabs.addTab(self._build_tab(present, sections, groups, show_all), title)
+            tabs.setTabEnabled(tabs.count() - 1, bool(present))
+
+        # A group the map does not mention still has to appear somewhere.
+        leftover = [g for g in sections if g not in placed]
+        if leftover:
+            tabs.addTab(self._build_tab(leftover, sections, groups, show_all), "OTHER")
+
+        self.param_layout.addWidget(tabs)
+
+    def _build_tab(self, group_names, sections, groups, show_all):
+        inner = QWidget()
+        column = QVBoxLayout(inner)
+        column.setAlignment(Qt.AlignTop)
+        column.setContentsMargins(4, 4, 4, 4)
+
+        if not group_names:
+            hint = QLabel("Nothing here until \u201cShow every parameter\u201d is ticked.")
+            hint.setWordWrap(True)
+            hint.setObjectName("muted")
+            column.addWidget(hint)
+
+        for parent in group_names:
+            # Within a tab there are few enough groups to open them by default.
+            self._add_section(column, parent, sections.get(parent) or [], groups,
+                              default_open=not show_all or len(group_names) <= 6)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setWidget(inner)
+        return scroll
+
+    def _lay_out_column(self, sections, groups, show_all):
+        """Every group in one scrolling column, Effects last."""
         ordered = ([(k, v) for k, v in sections.items() if k not in LAST_GROUPS]
                    + [(k, v) for k, v in sections.items() if k in LAST_GROUPS])
         for parent, items in ordered:
-            title = groups.get(parent, parent or "General")
-            head = QToolButton()
-            head.setText(title)
-            head.setCheckable(True)
-            head.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-            head.setObjectName("groupHead")
-            head.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            self.param_layout.addWidget(head)
+            self._add_section(self.param_layout, parent, items, groups,
+                              default_open=not show_all)
 
-            holder = QWidget()
-            form = QFormLayout(holder)
-            form.setContentsMargins(4, 0, 0, 0)
-            form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-            form.setRowWrapPolicy(QFormLayout.WrapLongRows)
-            form.setLabelAlignment(Qt.AlignLeft)
-            self.param_layout.addWidget(holder)
+    def _add_section(self, layout, parent, items, groups, default_open):
+        """One foldable group of controls, appended to `layout`."""
+        title = groups.get(parent, parent or "General")
 
-            # Remember which groups the user left open across rebuilds.  With
-            # every parameter shown there are dozens, so they start collapsed
-            # in that mode and open in the quick one.
-            open_now = self.group_open.get(parent, not show_all)
-            head.setChecked(open_now)
-            holder.setVisible(open_now)
-            head.setArrowType(Qt.DownArrow if open_now else Qt.RightArrow)
+        head = QToolButton()
+        head.setText(f"{title}  ({len(items)})")
+        head.setCheckable(True)
+        head.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        head.setObjectName("groupHead")
+        head.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        layout.addWidget(head)
 
-            def toggled(on, h=holder, b=head, key=parent):
-                h.setVisible(on)
-                b.setArrowType(Qt.DownArrow if on else Qt.RightArrow)
-                self.group_open[key] = on
+        holder = QWidget()
+        form = QFormLayout(holder)
+        form.setContentsMargins(4, 0, 0, 0)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+        form.setLabelAlignment(Qt.AlignLeft)
+        layout.addWidget(holder)
 
-            head.toggled.connect(toggled)
+        # Remember which groups the user left open across rebuilds.
+        open_now = self.group_open.get(parent, default_open)
+        head.setChecked(open_now)
+        holder.setVisible(open_now)
+        head.setArrowType(Qt.DownArrow if open_now else Qt.RightArrow)
 
-            for p in items:
-                w = self._widget_for(p)
-                if w is None:
-                    continue
-                w.setFocusPolicy(Qt.StrongFocus)
-                w.installEventFilter(self.wheel_guard)
-                w.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-                if isinstance(w, QComboBox):
-                    w.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
-                    w.setMinimumContentsLength(12)
-                label = QLabel(p["label"])
-                label.setWordWrap(True)
-                form.addRow(label, w)
-            head.setText(f"{title}  ({len(items)})")
+        def toggled(on, h=holder, b=head, key=parent):
+            h.setVisible(on)
+            b.setArrowType(Qt.DownArrow if on else Qt.RightArrow)
+            self.group_open[key] = on
 
-        if not self.widgets:
-            self.param_layout.addWidget(QLabel("No quick parameters; tick the box above."))
-        else:
-            self.sync_widgets()
+        head.toggled.connect(toggled)
+
+        for p in items:
+            w = self._widget_for(p)
+            if w is None:
+                continue
+            w.setFocusPolicy(Qt.StrongFocus)
+            w.installEventFilter(self.wheel_guard)
+            w.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            if isinstance(w, QComboBox):
+                w.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+                w.setMinimumContentsLength(12)
+            label = QLabel(p["label"])
+            label.setWordWrap(True)
+            form.addRow(label, w)
 
     def set_all_groups(self, open_: bool):
         for key in list(self.group_open):
             self.group_open[key] = open_
         for head in self.param_host.findChildren(QToolButton):
-            head.setChecked(open_)
+            if head.objectName() == "groupHead":
+                head.setChecked(open_)
 
     def _widget_for(self, p):
         t, name = p["type"], p["name"]
@@ -1145,6 +1225,11 @@ def main():
     install_identity(app)
     rend = cli.Renderer(cli.find_renderer(), cli.find_bundle(None))
     win = Window(rend)
+    # The tabs are the default; --single-column restores the older layout,
+    # which put every group in one scrolling list.
+    if "--single-column" in sys.argv or "--column" in sys.argv:
+        win.tabbed = False
+        win.rebuild_params()
 
     # A catalog hands over a whole selection, so take more than one path: the
     # first opens here and the rest get their own window.  Anything else would

@@ -175,9 +175,27 @@ Numeric parameters are **sliders** with a value readout and a ↺ button that re
 to whatever the preset said. The button greys out when the value is already there, so you
 can see at a glance what you have changed.
 
-Groups fold. **Quick Access, Color Management, Film, Print** and **Grain** are open by
-default — 61 controls; the remaining ~800 are one tick box away. **Effects** sits at the
-bottom, being a long list of optional extras.
+The controls sit in five tabs, following the upstream spektrafilm GUI:
+
+| Tab | Holds |
+|---|---|
+| **MAIN** | Quick Access, Color Management, Film, Scanner, Tonality, Info |
+| **FILM** | Grain, Halation, Diffusion, DIR Couplers and Sharpening, film chemistry, Filtering, Film Plane |
+| **PRINT** | Print, Advanced Print Chemistry, Illuminant Transfer |
+| **ADVANCED** | Pre-Adjustments, Colour Adaptation, and the lens and film-damage groups |
+| **CONFIG** | Presets, **LUT Export**, Manage, Backend |
+
+Groups fold within each tab. **Quick Access, Color Management, Film, Print** and **Grain**
+are shown by default — 61 controls; the remaining ~800 are one tick box away, which is
+also when CONFIG stops being empty.
+
+`--single-column` restores the older layout, one scrolling list with Effects at the
+bottom. The two show exactly the same 33 groups and 365 controls; a test asserts it.
+
+**CONFIG is worth a look.** Besides the preset buttons it carries clipboard copy/paste of
+settings, user defaults, a factory reset, **LUT Export** (33 or 65 point `.cube`, described
+by the plugin as *display-out SDR, colour only*), an RGB density curves overlay, and the
+Production/Realtime quality switch.
 
 ## The command line
 
