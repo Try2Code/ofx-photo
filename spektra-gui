@@ -35,7 +35,11 @@ PREVIEW_EDGE = 1100
 # Shown without ticking "show every parameter".  These are the groups worth
 # reaching for on most photographs.
 DEFAULT_GROUPS = ("quickAccessGroup", "colorGroup", "filmGroup", "printGroup",
-                  "grainGroup")
+                  "grainGroup",
+                  # CONFIG holds actions rather than obscure parameters -
+                  # exporting a LUT, presets, quality - so it is always shown.
+                  "managePresetGroup", "manageLutGroup", "manageGroup",
+                  "manageBackendGroup")
 
 # What may be dropped on the window: photographs, and saved sessions.
 SUPPORTED_SUFFIXES = ({".jpg", ".jpeg", ".png", ".tif", ".tiff", ".json"}
@@ -580,8 +584,9 @@ class Window(QMainWindow):
         for title, members in TABS:
             present = [g for g in members if sections.get(g)]
             placed.update(present)
+            # An empty tab stays clickable and explains itself; disabling it
+            # made the click do nothing at all, with no reason given.
             tabs.addTab(self._build_tab(present, sections, groups, show_all), title)
-            tabs.setTabEnabled(tabs.count() - 1, bool(present))
 
         # A group the map does not mention still has to appear somewhere.
         leftover = [g for g in sections if g not in placed]

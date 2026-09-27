@@ -497,6 +497,18 @@ def test_tabbed_layout(h: Harness):
           titles[:5] == ["MAIN", "FILM", "PRINT", "ADVANCED", "CONFIG"], str(titles))
     check("no group needed an OTHER tab", "OTHER" not in titles, str(titles))
 
+    # A tab that refuses the click teaches nothing; CONFIG in particular holds
+    # actions, so it is populated without ticking "show every parameter".
+    plain = gui.Window(h.rend)
+    tabs = plain.param_host.findChildren(QTabWidget)[0]
+    check("every tab is clickable",
+          all(tabs.isTabEnabled(i) for i in range(tabs.count())))
+    cfg = [i for i in range(tabs.count()) if tabs.tabText(i) == "CONFIG"][0]
+    from PyQt5.QtWidgets import QPushButton
+    labels = {b.text() for b in tabs.widget(cfg).findChildren(QPushButton)}
+    check("CONFIG is useful by default", "Export LUT" in labels,
+          f"{len(labels)} buttons")
+
     # The single column is still reachable, and must show exactly the same.
     c = gui.Window(h.rend)
     c.tabbed = False

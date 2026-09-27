@@ -1,0 +1,18 @@
+That's the **gamma double-encode bug**, still alive in the compare path.
+
+Here's the asymmetry. The rendered output and the original are stored in different encodings:
+
+- `self.rendered` — what the plugin returns, which is **already display-encoded** (sRGB)
+- `self.preview_linear` — the source photo after I decoded it, which is **linear**
+
+`_display()` takes an `encoded` flag for exactly this: the render is shown as-is, and the original gets `linear_to_srgb()` applied on the way to the screen. That much is right.
+
+The problem is what "the original" means. For a JPEG the pipeline is: sRGB from the file → **linearise** → hand to plugin. So `preview_linear` is a faithful linear version of your photo, and encoding it back with `linear_to_srgb()` *should* return you to roughly the original picture.
+
+If it's coming out brighter than both the original file and the render, the most likely culprit is that `preview_linear` is being encoded when it's already display-referred, or the source array in play is `full_linear` after the EV-bias step rather than the untouched one — either way an extra transfer function on a value that didn't need it, which lifts midtones exactly the way you're seeing. Mid-grey 0.21 linear → 0.5 encoded is correct; 0.5 encoded → 0.74 is the tell-tale lift, and that matches the "70 levels out of 255" figure from the earlier fix.
+
+Worth noting it's the same class of error as before — I fixed the *save* path and the *render display* path, but the compare path is a third consumer of the same data, and I only tested that it swapped images, never that the swapped image matched the file on disk.
+
+A concrete check the main thread could run: load a JPEG, grab the compare-view pixels and the decoded file pixels, and compare means. If the compare view is a clean `linear_to_srgb` of `srgb_to_linear(file)`, they should agree to within rounding; if it's brighter by roughly that 0.18-mean margin, it's the double encode.
+
+Either way this deserves a regression test, since "hold to compare shows the actual original" is precisely the kind of thing that looks fine until you measure it.

@@ -186,8 +186,8 @@ The controls sit in five tabs, following the upstream spektrafilm GUI:
 | **CONFIG** | Presets, **LUT Export**, Manage, Backend |
 
 Groups fold within each tab. **Quick Access, Color Management, Film, Print** and **Grain**
-are shown by default — 61 controls; the remaining ~800 are one tick box away, which is
-also when CONFIG stops being empty.
+are shown by default, along with everything in CONFIG — 66 controls. The remaining ~800
+are one tick box away.
 
 `--single-column` restores the older layout, one scrolling list with Effects at the
 bottom. The two show exactly the same 33 groups and 365 controls; a test asserts it.
