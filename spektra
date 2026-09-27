@@ -474,6 +474,24 @@ class Renderer:
     def by_name(self, sets=None) -> dict[str, dict]:
         return {p["name"]: p for p in (self.describe(sets) if sets else self.params)}
 
+    def fire(self, sets: list[tuple[str, str]]) -> tuple[bool, str]:
+        """Run the plugin for its side effects and hand back what it said.
+
+        Push buttons carry no value: they act when the host reports the
+        parameter changed.  Exporting a LUT, copying settings and restoring
+        defaults all work this way, and the plugin answers on stderr.
+        """
+        cmd = [str(self.renderer), "--bundle", str(self.bundle), "--list-params"]
+        for k, v in sets:
+            cmd += ["--set", f"{k}={v}"]
+        r = subprocess.run(cmd, capture_output=True)
+        note = r.stderr.decode("utf-8", "replace").strip()
+        for line in note.splitlines():
+            if "[plugin" in line:
+                note = line.split("]", 1)[-1].strip()
+                break
+        return r.returncode == 0, note
+
     def render(self, linear_rgb: np.ndarray, sets: list[tuple[str, str]]) -> np.ndarray:
         h, w = linear_rgb.shape[:2]
         rgba = np.ones((h, w, 4), np.float32)

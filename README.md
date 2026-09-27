@@ -193,9 +193,24 @@ also when CONFIG stops being empty.
 bottom. The two show exactly the same 33 groups and 365 controls; a test asserts it.
 
 **CONFIG is worth a look.** Besides the preset buttons it carries clipboard copy/paste of
-settings, user defaults, a factory reset, **LUT Export** (33 or 65 point `.cube`, described
-by the plugin as *display-out SDR, colour only*), an RGB density curves overlay, and the
-Production/Realtime quality switch.
+settings, user defaults, a factory reset, an RGB density curves overlay, the
+Production/Realtime quality switch, and **LUT Export**.
+
+### Exporting a LUT
+
+**Export LUT** in CONFIG writes a 33 or 65 point `.cube` of the current look. The GUI sets
+the colourspaces, so a LUT exported from a photo session is titled *Linear Rec.709 to
+sRGB* and is usable in anything that reads `.cube`.
+
+It carries the colour and nothing else. The plugin says so in the file it writes:
+
+```
+# Disabled for LUT export: grain, halation, DIR diffusion
+```
+
+Grain, halation and diffusion are spatial — they depend on neighbouring pixels — so no
+3D LUT can express them, whatever its resolution. Exported LUTs are covered by the
+plugin's own separate LUT licence.
 
 ## The command line
 

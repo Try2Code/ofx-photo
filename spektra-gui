@@ -543,7 +543,7 @@ class Window(QMainWindow):
         # changes produced the same title several times over.
         sections: dict[str, list[dict]] = {}
         for p in params:
-            if p["type"] in ("OfxParamTypeGroup", "OfxParamTypePushButton"):
+            if p["type"] == "OfxParamTypeGroup":
                 continue
             if p.get("secret"):
                 continue
@@ -656,6 +656,12 @@ class Window(QMainWindow):
         head.toggled.connect(toggled)
 
         for p in items:
+            if p["type"] == "OfxParamTypePushButton":
+                b = QPushButton(p["label"])
+                b.setToolTip(p.get("hint", ""))
+                b.clicked.connect(lambda _, n=p["name"], lbl=p["label"]: self.fire(n, lbl))
+                form.addRow("", b)
+                continue
             w = self._widget_for(p)
             if w is None:
                 continue
@@ -1119,6 +1125,37 @@ class Window(QMainWindow):
         depth = 8 if path.suffix.lower() in (".jpg", ".jpeg") else 16
         cli.save_photo(path, self.full_render, depth, 95, self.meta)
         self.statusBar().showMessage(f"saved {path}", 5000)
+
+    # Buttons that throw something away get asked about first.
+    DESTRUCTIVE = {
+        "resetDefaults": "Delete your saved defaults and return every control to "
+                         "the factory values?",
+        "pasteParams": "Replace the current settings with whatever is on the "
+                       "clipboard?",
+    }
+
+    def fire(self, name: str, label: str):
+        """Press a plugin push button: it acts on being told it changed."""
+        question = self.DESTRUCTIVE.get(name)
+        if question and QMessageBox.question(
+                self, label, question,
+                QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
+            return
+
+        self.statusBar().showMessage(f"{label}\u2026")
+        QApplication.processEvents()
+        ok, note = self.rend.fire(self.current_sets() + [(name, "")])
+        self.statusBar().showMessage(note or (f"{label} done" if ok
+                                              else f"{label} failed"), 12000)
+        if not ok and not note:
+            QMessageBox.warning(self, label, f"{label} did not complete.")
+        # A preset or defaults change rewrites values and dropdown contents.
+        if name in ("loadPreset", "pasteParams", "resetDefaults", "savePreset"):
+            self._refresh_user()
+            self.dirty.clear()
+            self.sync_widgets()
+            self.refresh_choices()
+            self.on_change()
 
     def save_preset(self):
         name, ok = QInputDialog.getText(self, "Save preset", "Name for this look:")

@@ -508,6 +508,49 @@ def test_tabbed_layout(h: Harness):
           f"{len(w.widgets)} vs {len(c.widgets)}")
 
 
+def test_push_buttons(h: Harness):
+    """Push buttons must be shown, and must not pretend to hold a value.
+
+    They were skipped entirely, which left the LUT Export group showing three
+    settings and no way to act on them.
+    """
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PyQt5.QtWidgets import QApplication, QPushButton, QTabWidget
+    except ImportError:
+        results.append(("skip", "push buttons", "PyQt5 not installed"))
+        print("  skip push buttons   (PyQt5 not installed)")
+        return
+
+    spec = importlib.util.spec_from_loader(
+        "gui", importlib.machinery.SourceFileLoader("gui", str(ROOT / "spektra-gui")))
+    gui = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gui)
+
+    app = QApplication.instance() or QApplication([])
+    w = gui.Window(h.rend)
+    w.chk_all.setChecked(True)
+
+    labels = {b.text() for b in w.param_host.findChildren(QPushButton)}
+    for wanted in ("Export LUT", "Copy Params", "Reset Factory Defaults"):
+        check(f"{wanted!r} is offered", wanted in labels)
+
+    declared = {p["name"] for p in h.rend.params
+                if p["type"] == "OfxParamTypePushButton" and not p.get("secret")}
+    check("no push button leaked into the value widgets",
+          not (declared & set(w.widgets)), str(declared & set(w.widgets)))
+    check("so none reaches a session",
+          not (declared & set(w.session()["params"])))
+
+    # Destructive ones must be guarded rather than fired on a stray click.
+    for name in ("resetDefaults", "pasteParams"):
+        check(f"{name} asks before acting", name in gui.Window.DESTRUCTIVE)
+
+    ok, note = h.rend.fire([("noSuchButton", "")])
+    check("firing an unknown parameter fails cleanly",
+          not ok and "no such parameter" in note.lower(), note[:60])
+
+
 def test_gui_model(h: Harness):
     """Drive the window offscreen: no display needed, no clicking."""
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -889,6 +932,7 @@ def main():
         ("encoding", lambda: test_output_encoding(h)),
         ("gui", lambda: test_gui_model(h)),
         ("tabs", lambda: test_tabbed_layout(h)),
+        ("buttons", lambda: test_push_buttons(h)),
     ]
 
     for name, fn in offline + (suite if h else []):
