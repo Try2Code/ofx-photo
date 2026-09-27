@@ -465,6 +465,44 @@ def test_metadata(h: Harness):
     check("metadata is JSON-serialisable", bool(json.dumps(info)))
 
 
+def test_tabbed_variant(h: Harness):
+    """The five-tab variant must place every group, not quietly drop one."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PyQt5.QtWidgets import QApplication, QTabWidget, QToolButton
+    except ImportError:
+        results.append(("skip", "tabbed variant", "PyQt5 not installed"))
+        print("  skip tabbed variant   (PyQt5 not installed)")
+        return
+
+    spec = importlib.util.spec_from_loader(
+        "gt", importlib.machinery.SourceFileLoader("gt", str(ROOT / "spektra-gui-tabs")))
+    gt = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gt)
+
+    app = QApplication.instance() or QApplication([])
+    w = gt.TabbedWindow(h.rend)
+    w.chk_all.setChecked(True)
+
+    tabs = w.param_host.findChildren(QTabWidget)[0]
+    titles = [tabs.tabText(i) for i in range(tabs.count())]
+    check("the five upstream tabs are present",
+          titles[:5] == ["MAIN", "FILM", "PRINT", "ADVANCED", "CONFIG"], str(titles))
+    check("no group needed an OTHER tab", "OTHER" not in titles,
+          "leftover groups were not mapped" if "OTHER" in titles else "")
+
+    placed = sum(len([x for x in tabs.widget(i).findChildren(QToolButton)
+                      if x.objectName() == "groupHead"]) for i in range(tabs.count()))
+    plain = gt.base.Window(h.rend)
+    plain.chk_all.setChecked(True)
+    expected = len([x for x in plain.param_host.findChildren(QToolButton)
+                    if x.objectName() == "groupHead"])
+    check("it shows as many groups as the single-column panel",
+          placed == expected, f"{placed} tabbed vs {expected} plain")
+    check("and as many controls", len(w.widgets) == len(plain.widgets),
+          f"{len(w.widgets)} vs {len(plain.widgets)}")
+
+
 def test_gui_model(h: Harness):
     """Drive the window offscreen: no display needed, no clicking."""
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -836,6 +874,7 @@ def main():
         ("chain", lambda: test_chain(h)),
         ("encoding", lambda: test_output_encoding(h)),
         ("gui", lambda: test_gui_model(h)),
+        ("tabs", lambda: test_tabbed_variant(h)),
     ]
 
     for name, fn in offline + (suite if h else []):

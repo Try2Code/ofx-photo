@@ -54,3 +54,7 @@ spektra-session*.json
 !docs/
 !docs/*.jpg
 !docs/*.png
+
+# The upstream research project, cloned here for reference only.
+spektrafilm/
+RawTherapee/
