@@ -45,6 +45,22 @@ jobs:
       - name: Desktop entry installs and validates
         run: ./install-desktop.sh
 
+      # cmake --install names each icon file, so a missing one fails outright.
+      # install-desktop.sh guards every copy with a test and would not notice,
+      # which is how seven icons stayed out of the repository unremarked.
+      - name: Install into a prefix, from the repository alone
+        run: |
+          cmake -S . -B build-install -DCMAKE_INSTALL_PREFIX="$PWD/prefix"
+          cmake --build build-install -j"$(nproc)"
+          cmake --install build-install
+          test -x prefix/bin/spektra-render
+          test -x prefix/bin/spektra
+          test -x prefix/bin/spektra-gui
+          for s in 16 24 32 48 64 128 256; do
+            test -f "$HOME/.local/share/icons/hicolor/${s}x${s}/apps/ofx-photo.png"
+          done
+          echo "every shipped icon installed"
+
   # The real thing, against the plugin, on software Vulkan.
   full:
     name: Full checks against the plugin
