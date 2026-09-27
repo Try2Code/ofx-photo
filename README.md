@@ -121,9 +121,10 @@ Each is tried directly and with a `Plugins/` subdirectory. Check which one won w
 
 ## The GUI
 
-The photograph is on the left with the controls on the right: preset at the top, then the
-extra passes, then the parameter groups. Here **EV bias** is greyed out because the open
-file is a JPEG — it only applies to raw.
+The photograph is on the left, the controls on the right: preset at the top, then the
+extra passes, then the five tabs. Two details visible above — **EV bias** is greyed out
+and labelled *raw only*, because the open file is a JPEG; and each group header carries
+its parameter count.
 
 ```sh
 ./spektra-gui                       # empty, then Open…
