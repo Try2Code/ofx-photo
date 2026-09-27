@@ -552,10 +552,15 @@ spektrafilm
 
 ## Licence
 
-GPL-3.0 — see [LICENSE](LICENSE).
+BSD-3-Clause — see [LICENSE](LICENSE).
 
-`ofx-include/` is the OpenFX API, copyright OpenFX and contributors, redistributed
-unmodified under BSD-3-Clause; see [ofx-include/LICENSE.md](ofx-include/LICENSE.md).
+The host was written from scratch against the published OpenFX specification. It vendors
+no third-party source except the API headers in `ofx-include/`, which are the OpenFX API,
+copyright OpenFX and contributors, redistributed unmodified under the same BSD-3-Clause
+terms; see [ofx-include/LICENSE.md](ofx-include/LICENSE.md).
+
+The plugin is not included and is never redistributed here: it is loaded at runtime from
+wherever you installed it, and keeps whatever licence its own vendor gives it.
 
 ## Not affiliated
 
