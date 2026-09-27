@@ -1,3 +1,5 @@
+<img src="docs/icon.png" width="96" align="right" alt="">
+
 # ofx-photo
 
 A minimal [OpenFX](https://openeffects.org/) host for applying OFX plugins to **still
@@ -15,6 +17,8 @@ cmake -S . -B build && cmake --build build     # build the host
 ./install-desktop.sh                           # menu entry and "Open With"
 ./spektra-gui photo.NEF                        # or just open it from the menu
 ```
+
+![The GUI, with a photograph open and the film controls on the right](docs/screenshot.jpg)
 
 ---
 
@@ -116,6 +120,10 @@ Each is tried directly and with a `Plugins/` subdirectory. Check which one won w
 ---
 
 ## The GUI
+
+The photograph is on the left with the controls on the right: preset at the top, then the
+extra passes, then the parameter groups. Here **EV bias** is greyed out because the open
+file is a JPEG — it only applies to raw.
 
 ```sh
 ./spektra-gui                       # empty, then Open…

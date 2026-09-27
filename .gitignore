@@ -46,3 +46,11 @@ venv/
 *.RW2
 *.ORF
 spektra-session*.json
+
+# ...except images that are part of the project rather than test material:
+# the shipped icons, which CMake installs, and the documentation screenshots.
+!desktop/icons/
+!desktop/icons/**/*.png
+!docs/
+!docs/*.jpg
+!docs/*.png
