@@ -1130,6 +1130,9 @@ class Window(QMainWindow):
         if self.full_render is None:
             self.render_full()
         depth = 8 if path.suffix.lower() in (".jpg", ".jpeg") else 16
+        preset = self.cb_preset.currentText()
+        self.meta["processing_note"] = f"spektra (ofx-photo) - {preset}" if preset \
+            else "spektra (ofx-photo)"
         cli.save_photo(path, self.full_render, depth, 95, self.meta)
         self.statusBar().showMessage(f"saved {path}", 5000)
 

@@ -520,6 +520,88 @@ def test_tabbed_layout(h: Harness):
           f"{len(w.widgets)} vs {len(c.widgets)}")
 
 
+def test_metadata_carried(h: Harness, raw: Path | None):
+    """The render must keep the photograph's metadata, and correct what changed."""
+    import shutil as _shutil
+    import subprocess as _sp
+
+    if not _shutil.which("exiftool"):
+        results.append(("skip", "metadata", "exiftool not installed"))
+        print("  skip metadata   (exiftool not installed)")
+        return
+
+    def tags(path):
+        out = _sp.run(["exiftool", "-s", str(path)], capture_output=True).stdout
+        return len(out.decode("utf-8", "replace").splitlines())
+
+    def tag(path, name):
+        out = _sp.run(["exiftool", "-s3", f"-{name}", str(path)], capture_output=True)
+        return out.stdout.decode("utf-8", "replace").strip()
+
+    with tempfile.TemporaryDirectory() as td:
+        # A source carrying a rotation, an XMP field and a custom EXIF value.
+        from PIL import Image
+        src = Path(td) / "src.jpg"
+        im = Image.open(h.photo)
+        im.thumbnail((360, 360))
+        im.convert("RGB").save(src, quality=92)
+        _sp.run(["exiftool", "-q", "-overwrite_original", "-Orientation#=6",
+                 "-Make=TESTCAM", "-XMP-dc:Creator=A Photographer", str(src)],
+                capture_output=True)
+        before = tags(src)
+        w0, h0 = Image.open(src).size
+
+        s = h.session(preset={"category": "Creative", "selection": "Chromium-Noir"})
+        out, meta = cli.render_session(h.rend, s, src)
+        dst = Path(td) / "out.jpg"
+        cli.save_photo(dst, out, 8, 92, meta)
+
+        after = tags(dst)
+        check("most of the metadata survives", after > before * 0.7,
+              f"{before} tags in, {after} out")
+        check("the camera make is carried", tag(dst, "Make") == "TESTCAM",
+              tag(dst, "Make"))
+        check("XMP is carried too", tag(dst, "XMP-dc:Creator") == "A Photographer",
+              tag(dst, "XMP-dc:Creator"))
+
+        # The rotation is applied to the pixels, so the tag must be cleared or
+        # a viewer turns the picture a second time.
+        w1, h1 = Image.open(dst).size
+        check("the rotation is baked into the pixels", (w1, h1) == (h0, w0),
+              f"{w0}x{h0} -> {w1}x{h1}")
+        check("and the orientation tag is reset",
+              tag(dst, "Orientation") in ("Horizontal (normal)", "1"),
+              tag(dst, "Orientation"))
+        check("the colourspace describes the output", tag(dst, "ColorSpace") == "sRGB",
+              tag(dst, "ColorSpace"))
+        check("the dimensions describe the output",
+              tag(dst, "ExifImageWidth") == str(w1), tag(dst, "ExifImageWidth"))
+        check("the render is recorded", "spektra" in tag(dst, "ProcessingSoftware"),
+              tag(dst, "ProcessingSoftware"))
+
+        # And it can be turned off.  A JPEG always reports a score of
+        # structural tags, so what matters is that nothing identifying the
+        # photograph or the camera is left.
+        bare = Path(td) / "bare.jpg"
+        cli.save_photo(bare, out, 8, 92, meta, keep_metadata=False)
+        leaked = [n for n in ("Make", "Model", "XMP-dc:Creator",
+                              "DateTimeOriginal", "LensModel")
+                  if tag(bare, n)]
+        check("--strip-metadata leaves nothing identifying", not leaked,
+              f"still present: {leaked}" if leaked else f"{tags(bare)} structural tags")
+
+    if raw:
+        with tempfile.TemporaryDirectory() as td:
+            s = h.session(preset={"category": "Clean Slate", "selection": "Clean Slate"},
+                          preview={"long_edge": 200})
+            out, meta = cli.render_session(h.rend, s, raw)
+            dst = Path(td) / "fromraw.jpg"
+            cli.save_photo(dst, out, 8, 92, meta)
+            check("a raw file's metadata reaches the JPEG",
+                  tags(dst) > 100 and tag(dst, "Model") != "",
+                  f"{tags(dst)} tags, Model={tag(dst, 'Model')!r}")
+
+
 def test_compare_shows_the_original(h: Harness):
     """Hold-to-compare must show the file, not a re-encoded version of it.
 
@@ -986,6 +1068,7 @@ def main():
         ("encoding", lambda: test_output_encoding(h)),
         ("gui", lambda: test_gui_model(h)),
         ("tabs", lambda: test_tabbed_layout(h)),
+        ("metadata", lambda: test_metadata_carried(h, args.raw)),
         ("compare", lambda: test_compare_shows_the_original(h)),
         ("buttons", lambda: test_push_buttons(h)),
     ]

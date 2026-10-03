@@ -57,6 +57,7 @@ Requirements:
 | `PyQt5` | the GUI |
 | `libraw-bin` (`dcraw_emu`) | camera raw, optional |
 | ImageMagick (`convert`) | 16-bit output and ICC conversion, optional |
+| `exiftool` | carrying metadata onto the result, optional |
 
 Either run it from the checkout:
 
@@ -251,6 +252,7 @@ file claims to be and what it actually decoded to.
 | `--seed N` | pin every random seed |
 | `--preview [PX]` | render small and fast, as the GUI preview does |
 | `--raw-ev-bias` | undo the camera's EV compensation on raw |
+| `--strip-metadata` | do not carry the original's metadata onto the result |
 | `--input-colorspace` | override the input transform |
 | `--bit-depth 8\|16`, `--quality N` | output |
 | `--jobs N` | images in parallel |
@@ -389,6 +391,27 @@ Coming out, the plugin applies its own output transform, so what it returns is a
 sRGB. The writers hand those pixels straight to the file. **Encoding them a second time
 lifts shadows by up to 70 levels out of 255**, which is easy to do by accident and looks
 merely "bright and filmic" rather than obviously broken.
+
+## Metadata
+
+The render keeps the photograph's metadata: EXIF, XMP, IPTC, GPS, maker notes — whatever
+the original carried, copied with `exiftool`. It matters most for raw, where Pillow alone
+carried almost nothing: a NEF that reached its JPEG with **23 tags** now arrives with
+**201**.
+
+Three things are corrected rather than copied, because they would otherwise describe the
+source instead of the file being written:
+
+| Tag | Why |
+|---|---|
+| **Orientation** | reset to 1, because the rotation is already applied to the pixels — copying it would have a viewer turn the picture a second time |
+| **ColorSpace**, ICC | the output is sRGB whatever the source was tagged as, so the source profile is dropped |
+| **Pixel dimensions** | they differ whenever the render was resized |
+
+`ProcessingSoftware` and `XMP:CreatorTool` record the render and the preset used.
+`--strip-metadata` turns the whole thing off, leaving only the structural tags a JPEG
+cannot avoid. Without `exiftool` installed you get the basic EXIF block Pillow can write
+and a note on stderr saying so.
 
 ## Raw files
 

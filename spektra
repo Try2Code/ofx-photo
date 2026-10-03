@@ -166,7 +166,7 @@ def linear_to_srgb(x: np.ndarray) -> np.ndarray:
 
 def load_photo(path: Path, raw_linear: bool = True) -> tuple[np.ndarray, str, dict]:
     """Return (linear RGBA float32, colourspace name for the plugin, metadata)."""
-    meta: dict = {}
+    meta: dict = {"source": str(path)}
     if path.suffix.lower() in RAW_SUFFIXES:
         meta["is_raw"] = True
         meta["exposure_bias"] = read_exposure_bias(path)
@@ -399,6 +399,59 @@ def load_raw(path: Path) -> np.ndarray:
         return read_ppm16(out[0])
 
 
+def copy_metadata(src: Path, dst: Path, note: str | None = None) -> tuple[bool, str]:
+    """Carry the original's metadata onto the rendered file.
+
+    Pillow can only replay a block of EXIF bytes, which loses everything else
+    and carries nothing at all from a raw file.  exiftool copies the lot --
+    EXIF, XMP, IPTC, GPS, maker notes -- so the render keeps the provenance of
+    the photograph it came from.
+
+    Three tags are corrected rather than copied, because they would otherwise
+    describe the source instead of the file being written:
+
+    * Orientation, since the rotation is already baked into these pixels and a
+      viewer would turn them a second time.
+    * The colourspace tags and the ICC profile, since the output is sRGB
+      whatever the source was tagged as.
+    * The pixel dimensions, which differ whenever the render was resized.
+    """
+    exiftool = shutil.which("exiftool")
+    if not exiftool:
+        return False, "exiftool is not installed, so only basic EXIF was kept"
+
+    try:
+        with Image.open(dst) as im:
+            width, height = im.size
+    except Exception:
+        width = height = None
+
+    copy = [exiftool, "-q", "-q", "-overwrite_original", "-m",
+            "-TagsFromFile", str(src), "-all:all", "--ICC_Profile", str(dst)]
+    r = subprocess.run(copy, capture_output=True)
+    if r.returncode != 0:
+        return False, (r.stderr.decode("utf-8", "replace").strip()
+                       or "exiftool could not copy the metadata")
+
+    # A second pass for the tags that must describe this file rather than the
+    # source.  They cannot ride along with -TagsFromFile: the copy wins over
+    # assignments made in the same invocation, which once left an already
+    # rotated photograph tagged "Rotate 180" and so shown upside down.
+    fix = [exiftool, "-q", "-q", "-overwrite_original", "-m",
+           "-Orientation#=1", "-ColorSpace=sRGB"]
+    if width:
+        fix += [f"-ExifImageWidth={width}", f"-ExifImageHeight={height}",
+                f"-PixelXDimension={width}", f"-PixelYDimension={height}"]
+    if note:
+        fix += [f"-ProcessingSoftware={note}", f"-XMP-xmp:CreatorTool={note}"]
+    fix.append(str(dst))
+    r = subprocess.run(fix, capture_output=True)
+    if r.returncode != 0:
+        return False, (r.stderr.decode("utf-8", "replace").strip()
+                       or "exiftool could not correct the copied tags")
+    return True, "metadata copied"
+
+
 def write_ppm16(path: Path, srgb: np.ndarray) -> None:
     h, w = srgb.shape[:2]
     arr = np.clip(srgb * 65535.0 + 0.5, 0, 65535).astype(">u2")
@@ -425,7 +478,7 @@ def save_deep(path: Path, srgb: np.ndarray) -> bool:
 
 
 def save_photo(path: Path, display_rgb: np.ndarray, bit_depth: int, quality: int,
-               meta: dict) -> None:
+               meta: dict, keep_metadata: bool = True) -> None:
     """Write pixels the plugin has already encoded for display.
 
     The plugin applies its own output transform, so what comes back is sRGB
@@ -433,19 +486,27 @@ def save_photo(path: Path, display_rgb: np.ndarray, bit_depth: int, quality: int
     """
     srgb = np.clip(display_rgb[..., :3], 0.0, 1.0)
     ext = path.suffix.lower()
-    if bit_depth == 16 and ext in (".tif", ".tiff", ".png"):
-        if save_deep(path, srgb):
-            return
+    deep = bit_depth == 16 and ext in (".tif", ".tiff", ".png")
+    if deep and not save_deep(path, srgb):
         print(f"spektra: cannot write 16-bit without ImageMagick; "
               f"writing {path.name} at 8-bit", file=sys.stderr)
-    arr = np.clip(srgb * 255.0 + 0.5, 0, 255).astype(np.uint8)
-    im = Image.fromarray(arr)
-    kw: dict = {}
-    if ext in (".jpg", ".jpeg"):
-        kw.update(quality=quality, subsampling=0)
-        if meta.get("exif"):
-            kw["exif"] = meta["exif"]
-    im.save(path, **kw)
+        deep = False
+    if not deep:
+        arr = np.clip(srgb * 255.0 + 0.5, 0, 255).astype(np.uint8)
+        im = Image.fromarray(arr)
+        kw: dict = {}
+        if ext in (".jpg", ".jpeg"):
+            kw.update(quality=quality, subsampling=0)
+            if keep_metadata and meta.get("exif"):
+                kw["exif"] = meta["exif"]
+        im.save(path, **kw)
+
+    source = meta.get("source")
+    if keep_metadata and source and Path(source).exists():
+        note = meta.get("processing_note") or "spektra (ofx-photo)"
+        ok, why = copy_metadata(Path(source), path, note)
+        if not ok:
+            print(f"spektra: {why}", file=sys.stderr)
 
 
 # ------------------------------------------------------------ the render call
@@ -544,6 +605,7 @@ def default_session() -> dict:
         "params": {},
         "seed": None,
         "raw_exposure_bias": False,
+        "keep_metadata": True,
         "chain": [],
         "preview": None,
         "output_options": {"bit_depth": 8, "quality": 95},
@@ -712,6 +774,8 @@ def session_from_args(args, rend: Renderer) -> dict:
         s["seed"] = args.seed
     if args.raw_ev_bias:
         s["raw_exposure_bias"] = True
+    if args.strip_metadata:
+        s["keep_metadata"] = False
     if args.preview is not None:
         s["preview"] = {"long_edge": args.preview}
     for kv in args.set or []:
@@ -773,7 +837,10 @@ def process_one(rend: Renderer, src: Path, dst: Path, session: dict,
     if save_preset:
         rend.describe(session_to_sets(s) + [(P_PRESET_NAME, save_preset), (P_SAVE, "")])
     opts = s.get("output_options") or {}
-    save_photo(dst, out, int(opts.get("bit_depth", 8)), int(opts.get("quality", 95)), meta)
+    preset = (s.get("preset") or {}).get("selection")
+    meta["processing_note"] = f"spektra (ofx-photo){f' - {preset}' if preset else ''}"
+    save_photo(dst, out, int(opts.get("bit_depth", 8)), int(opts.get("quality", 95)),
+               meta, keep_metadata=s.get("keep_metadata", True))
     return f"{src.name} -> {dst}"
 
 
@@ -822,6 +889,9 @@ def main() -> None:
     ap.add_argument("--chain", action="append", metavar="BUNDLE[:PRESET]",
                     help="run another pass after the first, e.g. --chain lens "
                          "or --chain 'diffuse:Clean Slate' (repeatable)")
+    ap.add_argument("--strip-metadata", action="store_true",
+                    help="do not carry the original's EXIF, XMP and the rest "
+                         "onto the result")
     ap.add_argument("--raw-ev-bias", action="store_true",
                     help="undo the camera's EV compensation on raw files, so they "
                          "land where the matching JPEG would")
