@@ -37,6 +37,10 @@ _spec.loader.exec_module(cli)
 
 PREVIEW_EDGE = 1100
 
+# What is left of the picture outside the crop.  Painted as a black overlay,
+# so the alpha is the complement: 30% brightness needs 70% opacity.
+CROP_OUTSIDE_BRIGHTNESS = 0.30
+
 # Shown without ticking "show every parameter".  These are the groups worth
 # reaching for on most photographs.
 DEFAULT_GROUPS = ("quickAccessGroup", "colorGroup", "filmGroup", "printGroup",
@@ -442,8 +446,9 @@ class ImageView(QLabel):
             return
 
         painter = QPainter(self)
-        # Dim what the crop discards, so the kept area reads immediately.
-        shade = QColor(0, 0, 0, 120)
+        # Dim what the crop discards, so the kept area reads immediately while
+        # the rest stays visible enough to judge the framing against.
+        shade = QColor(0, 0, 0, round((1.0 - CROP_OUTSIDE_BRIGHTNESS) * 255))
         for part in (QRect(f.x(), f.y(), f.width(), rect.y() - f.y()),
                      QRect(f.x(), rect.bottom(), f.width(),
                            f.bottom() - rect.bottom()),

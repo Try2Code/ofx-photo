@@ -422,8 +422,9 @@ lens would have given, and the correction a lens profile applies still refers to
 dimensions the camera actually exposed. The cost is that a small crop still pays for a
 full-frame render.
 
-The preview shows the whole frame with the discarded part dimmed, so you keep seeing what
-you are giving up. Only the saved file is cut.
+The preview shows the whole frame with the discarded part dimmed to **30% brightness** —
+dark enough that the kept area reads at a glance, bright enough to still judge the framing
+against what surrounds it. Only the saved file is cut.
 
 ## Keeping the settings
 

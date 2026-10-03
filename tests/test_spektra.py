@@ -785,6 +785,29 @@ def test_zoom_and_pan(h: Harness):
 
     check("a photograph opens fitted", v.zoom is None)
 
+    # The part a crop discards is dimmed rather than hidden, so the framing
+    # can still be judged against what surrounds it.
+    from PyQt5.QtGui import QColor
+    flat = stub_pixmap()
+    flat.fill(QColor(200, 200, 200))
+    v._pm = flat
+    v._rescale()
+    v.set_crop({"x": 0.3, "y": 0.3, "w": 0.4, "h": 0.4})
+    shot = v.grab().toImage()
+    pix = np.frombuffer(shot.bits().asstring(shot.sizeInBytes()), np.uint8)
+    pix = pix.reshape(shot.height(), shot.bytesPerLine() // 4, 4)[:, :shot.width(), :3]
+    fr = v._frame()
+    inside = float(pix[fr.y() + fr.height() // 2, fr.x() + fr.width() // 2, 0])
+    outside = float(pix[fr.y() + 6, fr.x() + 6, 0])
+    check("outside the crop is dimmed to the stated brightness",
+          abs(outside / max(inside, 1) - gui.CROP_OUTSIDE_BRIGHTNESS) < 0.02,
+          "%.0f of %.0f = %.2f, wanted %.2f" % (outside, inside,
+                                                outside / max(inside, 1),
+                                                gui.CROP_OUTSIDE_BRIGHTNESS))
+    check("and is still visible, not blacked out", outside > 5, "%.0f" % outside)
+    v.set_crop(None)
+    v._pm = stub_pixmap()
+
     v.set_zoom(2.0, (0.5, 0.5))
     win = v._source_window()
     check("zooming shows only part of the image",
