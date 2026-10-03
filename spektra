@@ -606,6 +606,9 @@ def default_session() -> dict:
         "seed": None,
         "raw_exposure_bias": False,
         "keep_metadata": True,
+        # Fractions of the original frame: x, y of the top-left corner, then
+        # width and height.  None means the whole frame.
+        "crop": None,
         "chain": [],
         "preview": None,
         "output_options": {"bit_depth": 8, "quality": 95},
@@ -669,6 +672,47 @@ def session_to_sets(session: dict) -> list[tuple[str, str]]:
     for name, value in (session.get("params") or {}).items():
         sets.append((str(name), str(value)))
     return sets
+
+
+def parse_crop(spec: str) -> dict:
+    """x,y,w,h as fractions of the frame, from the top-left."""
+    try:
+        x, y, w, h = (float(v) for v in spec.replace(" ", "").split(","))
+    except ValueError:
+        sys.exit(f"spektra: --crop wants X,Y,W,H as fractions, got {spec!r}")
+    if not (0 <= x < 1 and 0 <= y < 1) or w <= 0 or h <= 0:
+        sys.exit(f"spektra: --crop values must be fractions of the frame: {spec!r}")
+    if x + w > 1.000001 or y + h > 1.000001:
+        sys.exit(f"spektra: --crop reaches past the edge of the frame: {spec!r}")
+    return {"x": x, "y": y, "w": w, "h": h}
+
+
+def crop_box(shape: tuple[int, int], crop: dict) -> tuple[int, int, int, int]:
+    """Pixel bounds of a crop, so every caller rounds the same way."""
+    rows, cols = shape
+    x, y = float(crop.get("x", 0.0)), float(crop.get("y", 0.0))
+    w, h = float(crop.get("w", 1.0)), float(crop.get("h", 1.0))
+    x0, y0 = max(0, round(x * cols)), max(0, round(y * rows))
+    x1 = min(cols, max(round((x + w) * cols), x0 + 1))
+    y1 = min(rows, max(round((y + h) * rows), y0 + 1))
+    return x0, y0, x1, y1
+
+
+def apply_crop(img: np.ndarray, crop: dict | None) -> np.ndarray:
+    """Cut a window out of a rendered frame.
+
+    Applied *after* rendering, deliberately.  The plugin normalises every
+    optical effect to whatever image it is given, so cropping first would make
+    the crop the frame: the vignette would re-centre on it, lens distortion
+    would re-normalise to its half-diagonal, and grain would scale to it.
+    Rendering the whole frame first keeps all of that anchored to the
+    photograph as the camera took it, and the crop is then a true window onto
+    it -- an off-centre crop gets the asymmetric vignette a real lens gives.
+    """
+    if not crop:
+        return img
+    x0, y0, x1, y1 = crop_box(img.shape[:2], crop)
+    return img[y0:y1, x0:x1]
 
 
 def resize_linear(a: np.ndarray, long_edge: int) -> np.ndarray:
@@ -776,6 +820,8 @@ def session_from_args(args, rend: Renderer) -> dict:
         s["raw_exposure_bias"] = True
     if args.strip_metadata:
         s["keep_metadata"] = False
+    if args.crop:
+        s["crop"] = parse_crop(args.crop)
     if args.preview is not None:
         s["preview"] = {"long_edge": args.preview}
     for kv in args.set or []:
@@ -827,7 +873,8 @@ def render_session(rend: Renderer, session: dict, src: Path) -> tuple[np.ndarray
     preview = session.get("preview") or {}
     if preview.get("long_edge"):
         linear = resize_linear(linear, int(preview["long_edge"]))
-    return render_pipeline(session, linear, rend), meta
+    out = render_pipeline(session, linear, rend)
+    return apply_crop(out, session.get("crop")), meta
 
 
 def process_one(rend: Renderer, src: Path, dst: Path, session: dict,
@@ -889,6 +936,11 @@ def main() -> None:
     ap.add_argument("--chain", action="append", metavar="BUNDLE[:PRESET]",
                     help="run another pass after the first, e.g. --chain lens "
                          "or --chain 'diffuse:Clean Slate' (repeatable)")
+    ap.add_argument("--crop", metavar="X,Y,W,H",
+                    help="keep a window of the frame, as fractions from the "
+                         "top-left, e.g. 0.25,0.25,0.5,0.5 for the middle. The "
+                         "frame is rendered whole first, so vignette, "
+                         "distortion and grain stay as the camera saw them")
     ap.add_argument("--strip-metadata", action="store_true",
                     help="do not carry the original's EXIF, XMP and the rest "
                          "onto the result")

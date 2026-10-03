@@ -392,6 +392,38 @@ sRGB. The writers hand those pixels straight to the file. **Encoding them a seco
 lifts shadows by up to 70 levels out of 255**, which is easy to do by accident and looks
 merely "bright and filmic" rather than obviously broken.
 
+## Cropping
+
+Drag a rectangle on the photograph with **Crop** ticked, or on the command line:
+
+```sh
+./spektra photo.jpg out.jpg --preset "OIL!" --crop 0.25,0.25,0.5,0.5
+```
+
+x, y, width and height as fractions of the frame, from the top-left. A click without a
+drag clears it.
+
+**The frame is always rendered whole and cut afterwards**, which is the point. The plugin
+normalises every optical effect to the image it is handed, so cropping first would make
+the crop *the frame*: the vignette would re-centre on it, lens distortion would
+re-normalise to its half-diagonal, chromatic aberration, coma and bokeh would move their
+optical centres, and grain would rescale.
+
+Measured on a flat field with a vignette, cropping the top-left quarter:
+
+| | corner value |
+|---|---|
+| crop rendered on its own | 0.20 — full corner darkening, as if it were the frame |
+| the same window of the full render | 0.36 — partial, because it is not the frame corner |
+
+So a crop here is a true window: an off-centre one gets the asymmetric vignette a real
+lens would have given, and the correction a lens profile applies still refers to the
+dimensions the camera actually exposed. The cost is that a small crop still pays for a
+full-frame render.
+
+The preview shows the whole frame with the discarded part dimmed, so you keep seeing what
+you are giving up. Only the saved file is cut.
+
 ## Metadata
 
 The render keeps the photograph's metadata: EXIF, XMP, IPTC, GPS, maker notes — whatever

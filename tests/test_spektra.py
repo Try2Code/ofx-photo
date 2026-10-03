@@ -520,6 +520,64 @@ def test_tabbed_layout(h: Harness):
           f"{len(w.widgets)} vs {len(c.widgets)}")
 
 
+def test_crop(h: Harness):
+    """A crop must be a window onto the full render, not a new frame.
+
+    The plugin normalises every optical effect to the image it is given, so
+    cropping first would re-centre the vignette, re-normalise lens distortion
+    and rescale grain.  The frame is rendered whole and cut afterwards.
+    """
+    check("a crop spec parses", cli.parse_crop("0.25,0.25,0.5,0.5") ==
+          {"x": 0.25, "y": 0.25, "w": 0.5, "h": 0.5})
+    for bad in ("1,1,1,1", "0,0,0,0.5", "0.5,0.5,0.9,0.9", "nonsense", "0,0,1"):
+        try:
+            cli.parse_crop(bad)
+            check(f"rejects {bad!r}", False)
+        except SystemExit:
+            check(f"rejects {bad!r}", True)
+
+    # A flat field makes the vignette's anchor unmistakable.
+    flat = np.full((240, 360, 3), 0.18, np.float32)
+    s = h.session(preset={"category": "Clean Slate", "selection": "Clean Slate"},
+                  params={"quickGrainEnabled": "false",
+                          "quickVignetteEnabled": "true",
+                          "quickVignettePreset": "Vintage Mechanical"})
+    full = cli.render_pipeline(s, flat, h.rend)
+
+    corner = {"x": 0.0, "y": 0.0, "w": 0.5, "h": 0.5}
+    cut = cli.apply_crop(full, corner)
+    rows, cols = full.shape[:2]
+    check("the crop is the right size",
+          cut.shape[:2] == (round(rows * 0.5), round(cols * 0.5)),
+          f"{cut.shape[1]}x{cut.shape[0]} of {cols}x{rows}")
+    check("and is exactly that window of the full render",
+          np.array_equal(cut, full[:cut.shape[0], :cut.shape[1]]))
+
+    # Anchored: within a top-left crop the frame corner stays the darkest
+    # point and it brightens towards the frame centre.
+    near = float(cut[2:6, 2:6, :3].mean())
+    far = float(cut[-6:-2, -6:-2, :3].mean())
+    check("the vignette stays anchored to the original frame", far > near,
+          "frame corner %.4f, towards frame centre %.4f" % (near, far))
+
+    # Had it re-centred, the crop rendered alone would differ from the window.
+    alone = cli.render_pipeline(s, flat[:cut.shape[0], :cut.shape[1]], h.rend)
+    check("rendering the crop alone would have differed",
+          not np.allclose(alone, cut, atol=2e-3),
+          "mean diff %.4f" % float(np.abs(alone - cut).mean()))
+
+    check("no crop leaves the frame alone", cli.apply_crop(full, None) is full)
+
+    # One rounding, so the size the panel reports is the size that is written.
+    box = cli.crop_box((3008, 4512), {"x": 0.2494, "y": 0.2492,
+                                      "w": 0.5, "h": 0.4498})
+    cut = cli.apply_crop(np.zeros((3008, 4512, 3), np.float32),
+                         {"x": 0.2494, "y": 0.2492, "w": 0.5, "h": 0.4498})
+    check("the reported size is the written size",
+          (box[2] - box[0], box[3] - box[1]) == (cut.shape[1], cut.shape[0]),
+          f"{box[2]-box[0]}x{box[3]-box[1]} vs {cut.shape[1]}x{cut.shape[0]}")
+
+
 def test_metadata_carried(h: Harness, raw: Path | None):
     """The render must keep the photograph's metadata, and correct what changed."""
     import shutil as _shutil
@@ -644,6 +702,14 @@ def test_compare_shows_the_original(h: Harness):
           abs(float(a.mean()) - twice) > 0.05, "double encode would be %.4f" % twice)
 
 
+class QPixmapStub:
+    """Stands in for a loaded preview, so the crop maths has a frame to map to."""
+
+    def size(self):
+        from PyQt5.QtCore import QSize
+        return QSize(600, 400)
+
+
 def test_push_buttons(h: Harness):
     """Push buttons must be shown, and must not pretend to hold a value.
 
@@ -681,6 +747,31 @@ def test_push_buttons(h: Harness):
     # Destructive ones must be guarded rather than fired on a stray click.
     for name in ("resetDefaults", "pasteParams"):
         check(f"{name} asks before acting", name in gui.Window.DESTRUCTIVE)
+
+    # The crop is a view-level thing: dragging sets it, a plain click clears
+    # it, and it reaches the session so a replay crops the same way.
+    from PyQt5.QtCore import QPoint, Qt as _Qt
+    from PyQt5.QtGui import QMouseEvent
+    view = w.view
+    view._pm = QPixmapStub()
+    view.set_cropping(True)
+    f = view._frame()
+    if f:
+        a = QPoint(f.x() + int(f.width() * 0.25), f.y() + int(f.height() * 0.25))
+        b = QPoint(f.x() + int(f.width() * 0.75), f.y() + int(f.height() * 0.75))
+        view.mousePressEvent(QMouseEvent(QMouseEvent.MouseButtonPress, a,
+                                         _Qt.LeftButton, _Qt.LeftButton, _Qt.NoModifier))
+        view.mouseReleaseEvent(QMouseEvent(QMouseEvent.MouseButtonRelease, b,
+                                           _Qt.LeftButton, _Qt.LeftButton, _Qt.NoModifier))
+        got = w.session()["crop"]
+        check("dragging sets a crop", got is not None and 0.4 < got["w"] < 0.6,
+              str(got))
+        view.mousePressEvent(QMouseEvent(QMouseEvent.MouseButtonPress, a,
+                                         _Qt.LeftButton, _Qt.LeftButton, _Qt.NoModifier))
+        view.mouseReleaseEvent(QMouseEvent(QMouseEvent.MouseButtonRelease, a,
+                                           _Qt.LeftButton, _Qt.LeftButton, _Qt.NoModifier))
+        check("a click without a drag clears it", w.session()["crop"] is None)
+    view.set_cropping(False)
 
     ok, note = h.rend.fire([("noSuchButton", "")])
     check("firing an unknown parameter fails cleanly",
@@ -1068,6 +1159,7 @@ def main():
         ("encoding", lambda: test_output_encoding(h)),
         ("gui", lambda: test_gui_model(h)),
         ("tabs", lambda: test_tabbed_layout(h)),
+        ("crop", lambda: test_crop(h)),
         ("metadata", lambda: test_metadata_carried(h, args.raw)),
         ("compare", lambda: test_compare_shows_the_original(h)),
         ("buttons", lambda: test_push_buttons(h)),
