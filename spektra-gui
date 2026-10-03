@@ -274,6 +274,7 @@ class ImageView(QLabel):
     """
 
     cropChanged = pyqtSignal(object)   # dict of fractions, or None
+    zoomChanged = pyqtSignal(object)   # screen pixels per image pixel, or None
 
     def __init__(self):
         super().__init__()
@@ -287,28 +288,83 @@ class ImageView(QLabel):
         self.cropping = False
         self._drag_from: QPoint | None = None
         self._drag_to: QPoint | None = None
+        self.zoom: float | None = None
+        self.center: tuple[float, float] = (0.5, 0.5)
+        self._pan_from: QPoint | None = None
+        self._pan_center: tuple[float, float] = (0.5, 0.5)
 
-    # -- where the scaled pixmap actually sits inside the widget
+    # -- zoom and pan
+    #
+    # zoom is None while the picture is fitted to the window; otherwise it is
+    # screen pixels per image pixel, so 1.0 is one for one.  center is the
+    # point of the image held in the middle of the view, in fractions.
+
+    def _source_window(self) -> QRect:
+        """The part of the image currently on screen, in image pixels."""
+        pm = self._pm
+        if self.zoom is None:
+            return QRect(0, 0, pm.width(), pm.height())
+        vw = min(pm.width(), max(1, int(self.width() / self.zoom)))
+        vh = min(pm.height(), max(1, int(self.height() / self.zoom)))
+        x = int(self.center[0] * pm.width() - vw / 2)
+        y = int(self.center[1] * pm.height() - vh / 2)
+        x = min(max(x, 0), pm.width() - vw)
+        y = min(max(y, 0), pm.height() - vh)
+        return QRect(x, y, vw, vh)
+
     def _frame(self) -> QRect | None:
+        """Where the visible part of the image is drawn inside the widget."""
         if not self._pm:
             return None
-        size = self._pm.size()
-        size.scale(self.size(), Qt.KeepAspectRatio)
+        win = self._source_window()
+        if self.zoom is None:
+            size = QSize(win.width(), win.height())
+            size.scale(self.size(), Qt.KeepAspectRatio)
+        else:
+            size = QSize(int(win.width() * self.zoom), int(win.height() * self.zoom))
         return QRect((self.width() - size.width()) // 2,
                      (self.height() - size.height()) // 2,
                      size.width(), size.height())
 
     def _to_fraction(self, pos: QPoint) -> tuple[float, float] | None:
+        """Widget position to a fraction of the whole image, zoom included."""
         f = self._frame()
-        if not f or not f.width() or not f.height():
+        if not f or not f.width() or not f.height() or not self._pm:
             return None
-        x = min(max((pos.x() - f.x()) / f.width(), 0.0), 1.0)
-        y = min(max((pos.y() - f.y()) / f.height(), 0.0), 1.0)
-        return x, y
+        win = self._source_window()
+        u = min(max((pos.x() - f.x()) / f.width(), 0.0), 1.0)
+        v = min(max((pos.y() - f.y()) / f.height(), 0.0), 1.0)
+        x = (win.x() + u * win.width()) / self._pm.width()
+        y = (win.y() + v * win.height()) / self._pm.height()
+        return min(max(x, 0.0), 1.0), min(max(y, 0.0), 1.0)
+
+    def set_zoom(self, zoom: float | None, at: tuple[float, float] | None = None):
+        self.zoom = zoom
+        if at:
+            self.center = at
+        self._rescale()
+        self.zoomChanged.emit(zoom)
+
+    def wheelEvent(self, ev):
+        if not self._pm:
+            return super().wheelEvent(ev)
+        under = self._to_fraction(ev.pos())
+        step = 1.25 if ev.angleDelta().y() > 0 else 1 / 1.25
+        base = self.zoom if self.zoom is not None else self._fit_zoom()
+        new = min(max(base * step, self._fit_zoom() * 0.9), 16.0)
+        # Falling back to the fit scale snaps out of zoom entirely.
+        self.set_zoom(None if new <= self._fit_zoom() else new, under)
+        ev.accept()
+
+    def _fit_zoom(self) -> float:
+        if not self._pm or not self._pm.width():
+            return 1.0
+        return min(self.width() / self._pm.width(), self.height() / self._pm.height())
 
     def set_cropping(self, on: bool):
         self.cropping = on
-        self.setCursor(Qt.CrossCursor if on else Qt.ArrowCursor)
+        self.setCursor(Qt.CrossCursor if on else
+                       (Qt.OpenHandCursor if self.zoom is not None else Qt.ArrowCursor))
         self.update()
 
     def set_crop(self, crop: dict | None):
@@ -316,19 +372,41 @@ class ImageView(QLabel):
         self.update()
 
     def mousePressEvent(self, ev):
-        if not self.cropping or not self._pm:
+        if not self._pm:
             return super().mousePressEvent(ev)
-        self._drag_from = ev.pos()
-        self._drag_to = ev.pos()
-        self.update()
+        if self.cropping:
+            self._drag_from = ev.pos()
+            self._drag_to = ev.pos()
+            self.update()
+            return
+        if self.zoom is not None:
+            # Not cropping and zoomed in, so dragging moves the picture.
+            self._pan_from = ev.pos()
+            self._pan_center = self.center
+            self.setCursor(Qt.ClosedHandCursor)
+        return super().mousePressEvent(ev)
 
     def mouseMoveEvent(self, ev):
+        if self._pan_from is not None and self._pm:
+            win = self._source_window()
+            dx = (ev.pos().x() - self._pan_from.x()) / max(self.zoom or 1, 1e-6)
+            dy = (ev.pos().y() - self._pan_from.y()) / max(self.zoom or 1, 1e-6)
+            self.center = (
+                min(max(self._pan_center[0] - dx / self._pm.width(), 0.0), 1.0),
+                min(max(self._pan_center[1] - dy / self._pm.height(), 0.0), 1.0))
+            self._rescale()
+            return
         if self._drag_from is None:
             return super().mouseMoveEvent(ev)
         self._drag_to = ev.pos()
         self.update()
 
     def mouseReleaseEvent(self, ev):
+        if self._pan_from is not None:
+            self._pan_from = None
+            self.setCursor(Qt.OpenHandCursor if self.zoom is not None
+                           else Qt.ArrowCursor)
+            return super().mouseReleaseEvent(ev)
         if self._drag_from is None:
             return super().mouseReleaseEvent(ev)
         a = self._to_fraction(self._drag_from)
@@ -388,9 +466,21 @@ class ImageView(QLabel):
         self._rescale()
 
     def _rescale(self):
-        if self._pm:
-            self.setPixmap(self._pm.scaled(self.size(), Qt.KeepAspectRatio,
-                                           Qt.SmoothTransformation))
+        if not self._pm:
+            return
+        win = self._source_window()
+        part = self._pm.copy(win) if self.zoom is not None else self._pm
+        if self.zoom is None:
+            self.setPixmap(part.scaled(self.size(), Qt.KeepAspectRatio,
+                                       Qt.SmoothTransformation))
+        elif abs(self.zoom - 1.0) < 1e-6:
+            # One for one: no resampling at all, which is the whole point.
+            self.setPixmap(part)
+        else:
+            mode = Qt.SmoothTransformation if self.zoom < 1 else Qt.FastTransformation
+            self.setPixmap(part.scaled(int(win.width() * self.zoom),
+                                       int(win.height() * self.zoom),
+                                       Qt.KeepAspectRatio, mode))
 
     def resizeEvent(self, e):
         self._rescale()
@@ -433,6 +523,7 @@ class Window(QMainWindow):
 
         self.view = ImageView()
         self.view.cropChanged.connect(self.on_crop)
+        self.view.zoomChanged.connect(self.on_zoom)
         self.setAcceptDrops(True)
         self._build_ui()
         self._restore()
@@ -465,6 +556,18 @@ class Window(QMainWindow):
             "window onto that. Click without dragging to clear it.")
         self.chk_crop.toggled.connect(self.view.set_cropping)
         bar.addWidget(self.chk_crop)
+
+        self.b_zoom = QPushButton("1:1")
+        self.b_zoom.setCheckable(True)
+        self.b_zoom.setMaximumWidth(52)
+        self.b_zoom.setToolTip(
+            "Show the photograph at one screen pixel per image pixel.\n"
+            "Grain and halation are resolution dependent, so this is the only\n"
+            "honest way to judge them. Needs the full-resolution render, and\n"
+            "will make one if there is not already one.\n"
+            "Scroll to zoom, drag to move about, press again to fit.")
+        self.b_zoom.clicked.connect(self.toggle_one_to_one)
+        bar.addWidget(self.b_zoom)
         self.lbl_crop = QLabel("")
         self.lbl_crop.setObjectName("muted")
         bar.addWidget(self.lbl_crop)
@@ -1114,6 +1217,7 @@ class Window(QMainWindow):
             self.statusBar().clearMessage()
             return
         self.source_path, self.raw_linear, self.meta = path, linear, meta
+        self.view.set_zoom(None)
         self.update_evbias_state()
         self.rebuild_source()
         h, w = linear.shape[:2]
@@ -1136,6 +1240,46 @@ class Window(QMainWindow):
             self.chk_lens.blockSignals(False)
             self.statusBar().showMessage("lens pass switched on", 4000)
         self.on_change()
+
+    def toggle_one_to_one(self):
+        """One screen pixel per image pixel, from the full-resolution render.
+
+        Magnifying the preview would only invent detail: it is 1100 px on the
+        long edge, and grain and halation are resolution dependent, which is
+        the reason to look closely in the first place.
+        """
+        if self.full_linear is None:
+            self.b_zoom.setChecked(False)
+            return
+        # Toggle against 1:1 itself, not against being zoomed at all, or
+        # scrolling first would turn this button into a plain "fit".
+        if self.view.zoom is not None and abs(self.view.zoom - 1.0) < 1e-6:
+            self.view.set_zoom(None)
+            return
+
+        if self.full_render is None:
+            rows, cols = self.full_linear.shape[:2]
+            self.statusBar().showMessage(
+                f"rendering {cols}\u00d7{rows} so 1:1 shows real detail\u2026")
+            QApplication.processEvents()
+            self.render_full()
+        if self.full_render is None:
+            self.b_zoom.setChecked(False)
+            return
+        self._display(self.full_render)
+        self.view.set_zoom(1.0)
+
+    def on_zoom(self, zoom):
+        self.b_zoom.setChecked(zoom is not None)
+        if zoom is None:
+            # Back to fitting, so the quick preview is enough again.
+            if self.rendered is not None and not self.showing_original:
+                self._display(self.rendered)
+            self.statusBar().showMessage("fitted to the window", 4000)
+        else:
+            self.statusBar().showMessage(
+                f"{zoom * 100:.0f}%" + ("  (1:1, real pixels)"
+                                        if abs(zoom - 1.0) < 1e-6 else ""), 4000)
 
     def on_crop(self, crop):
         """The crop only changes what is kept, so nothing needs re-rendering."""

@@ -171,6 +171,7 @@ cmd  = ["spektra", "{src}", "{dst}", "--preset", "Marty - Warm", "--raw-ev-bias"
 | **EV bias** | undo the camera's exposure compensation; **raw only**, and greyed out with the reason for anything else |
 | **Diffuse pass / Lens pass** | extra passes through the companion plugins |
 | **Show every parameter** | all 830, grouped and collapsed |
+| **1:1** (beside Crop) | one screen pixel per image pixel; scroll to zoom, drag to move about |
 | **Render full resolution** | the preview is downscaled; this is the real thing |
 
 Numeric parameters are **sliders** with a value readout and a ↺ button that returns them
@@ -582,7 +583,12 @@ and the enable as separate parameters, so picking a vignette preset while vignet
 does nothing at all. The GUI arms it for you and says so.
 
 **The preview is downscaled** to 1100 px. Grain and halation are resolution dependent, so
-use **Render full resolution** before saving to see the real thing.
+use **1:1** or **Render full resolution** to see the real thing.
+
+**1:1 renders the full frame first**, and says so while it works. Magnifying the preview
+would only invent detail, since it is 1100 px on the long edge — and judging grain is the
+reason to look closely in the first place. Scrolling zooms freely between fit and 16×;
+dragging moves the picture when the Crop box is unticked.
 
 **Some dropdowns rewrite others.** Choosing a Stock Category replaces the Stock list —
 Motion Picture offers 14 films, B&W Still Film 6 — and a Preset Category replaces the
@@ -613,7 +619,7 @@ Both paths go through PPM and ImageMagick instead. Worth remembering if you exte
 - [x] The companion plugins, as chained passes
 - [x] Desktop launcher and "Open With"
 - [ ] OpenEXR and HDR output
-- [ ] Render only the visible crop when zoomed in
+- [x] Zoom, pan, and a 1:1 view from the full-resolution render
 - [ ] Batch progress and resumable runs
 
 ## Credits and links

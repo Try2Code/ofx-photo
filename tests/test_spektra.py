@@ -752,12 +752,82 @@ def test_compare_shows_the_original(h: Harness):
           abs(float(a.mean()) - twice) > 0.05, "double encode would be %.4f" % twice)
 
 
-class QPixmapStub:
-    """Stands in for a loaded preview, so the crop maths has a frame to map to."""
+def stub_pixmap(width: int = 600, height: int = 400):
+    """A real pixmap of a known size, so the view maths has a frame to map to."""
+    from PyQt5.QtGui import QPixmap
+    pm = QPixmap(width, height)
+    pm.fill()
+    return pm
 
-    def size(self):
-        from PyQt5.QtCore import QSize
-        return QSize(600, 400)
+
+def test_zoom_and_pan(h: Harness):
+    """1:1 must show real pixels, which means the full-resolution render."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PyQt5.QtWidgets import QApplication
+        from PyQt5.QtCore import QPoint, Qt as _Qt
+        from PyQt5.QtGui import QMouseEvent
+    except ImportError:
+        results.append(("skip", "zoom", "PyQt5 not installed"))
+        print("  skip zoom   (PyQt5 not installed)")
+        return
+
+    spec = importlib.util.spec_from_loader(
+        "gui", importlib.machinery.SourceFileLoader("gui", str(ROOT / "spektra-gui")))
+    gui = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gui)
+
+    app = QApplication.instance() or QApplication([])
+    w = gui.Window(h.rend)
+    w.resize(800, 600)
+    v = w.view
+    v._pm = stub_pixmap()
+
+    check("a photograph opens fitted", v.zoom is None)
+
+    v.set_zoom(2.0, (0.5, 0.5))
+    win = v._source_window()
+    check("zooming shows only part of the image",
+          win.width() < 600 and win.height() < 400,
+          f"{win.width()}x{win.height()} of 600x400")
+
+    v.center = (0.5, 0.5)
+    v._pan_from, v._pan_center = QPoint(400, 300), (0.5, 0.5)
+    v.mouseMoveEvent(QMouseEvent(QMouseEvent.MouseMove, QPoint(300, 200),
+                                 _Qt.LeftButton, _Qt.LeftButton, _Qt.NoModifier))
+    check("dragging pans", v.center != (0.5, 0.5), "(%.3f, %.3f)" % v.center)
+
+    v.center = (0.5, 0.5)
+    v._pan_from, v._pan_center = QPoint(0, 0), (0.0, 0.0)
+    v.mouseMoveEvent(QMouseEvent(QMouseEvent.MouseMove, QPoint(9999, 9999),
+                                 _Qt.LeftButton, _Qt.LeftButton, _Qt.NoModifier))
+    check("panning stays on the picture",
+          0.0 <= v.center[0] <= 1.0 and 0.0 <= v.center[1] <= 1.0,
+          "(%.3f, %.3f)" % v.center)
+    v._pan_from = None
+
+    # Coordinates must still map correctly while zoomed, or a crop drawn at
+    # 1:1 would land somewhere else entirely.
+    v.set_zoom(None)
+    v.center = (0.5, 0.5)
+    f = v._frame()
+    fitted = v._to_fraction(QPoint(f.x() + f.width() // 2, f.y() + f.height() // 2))
+    v.set_zoom(3.0, (0.5, 0.5))
+    f = v._frame()
+    zoomed = v._to_fraction(QPoint(f.x() + f.width() // 2, f.y() + f.height() // 2))
+    check("the centre maps to the centre at any zoom",
+          abs(fitted[0] - zoomed[0]) < 0.02 and abs(fitted[1] - zoomed[1]) < 0.02,
+          f"{fitted} vs {zoomed}")
+
+    # The button toggles against 1:1, not against being zoomed at all.
+    v.set_zoom(0.7)
+    w.full_linear = np.zeros((40, 60, 3), np.float32)
+    w.full_render = np.zeros((40, 60, 3), np.float32)
+    w.toggle_one_to_one()
+    check("1:1 from some other zoom goes to 1:1",
+          v.zoom is not None and abs(v.zoom - 1.0) < 1e-6, str(v.zoom))
+    w.toggle_one_to_one()
+    check("and pressing it again fits", v.zoom is None)
 
 
 def test_push_buttons(h: Harness):
@@ -803,7 +873,7 @@ def test_push_buttons(h: Harness):
     from PyQt5.QtCore import QPoint, Qt as _Qt
     from PyQt5.QtGui import QMouseEvent
     view = w.view
-    view._pm = QPixmapStub()
+    view._pm = stub_pixmap()
     view.set_cropping(True)
     f = view._frame()
     if f:
@@ -1213,6 +1283,7 @@ def main():
         ("provenance", lambda: test_provenance(h)),
         ("metadata", lambda: test_metadata_carried(h, args.raw)),
         ("compare", lambda: test_compare_shows_the_original(h)),
+        ("zoom", lambda: test_zoom_and_pan(h)),
         ("buttons", lambda: test_push_buttons(h)),
     ]
 
