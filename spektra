@@ -754,7 +754,7 @@ def resize_linear(a: np.ndarray, long_edge: int) -> np.ndarray:
 
 # ------------------------------------------------------------------ provenance
 
-TOOL_VERSION = "0.5.0"
+TOOL_VERSION = "0.5.1"
 
 
 def file_digest(path: Path, limit: int = 64 * 1024 * 1024) -> str | None:
