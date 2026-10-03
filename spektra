@@ -639,6 +639,9 @@ def load_session(spec: str) -> dict:
         sys.exit(f"spektra: session is not valid JSON: {e}")
     if not isinstance(raw, dict):
         sys.exit("spektra: a session must be a JSON object")
+    # A provenance record wraps the session, so one can be replayed directly.
+    if raw.get("format", "").startswith("ofx-photo-provenance") and "session" in raw:
+        raw = raw["session"]
     if raw.get("version", SESSION_VERSION) > SESSION_VERSION:
         sys.exit(f"spektra: session version {raw['version']} is newer than this tool")
 
@@ -649,6 +652,22 @@ def load_session(spec: str) -> dict:
         else:
             s[k] = v
     return s
+
+
+# What describes the look, as opposed to this particular photograph.  A crop
+# is framing, and the paths and preview size belong to one render.
+LOOK_KEYS = ("preset", "user_preset", "params", "chain",
+             "input_colorspace", "output_colorspace", "seed",
+             "raw_exposure_bias")
+
+
+def look_from(session: dict) -> dict:
+    """Keep the grade, drop the framing and the paths."""
+    out = default_session()
+    for k in LOOK_KEYS:
+        if k in session:
+            out[k] = copy.deepcopy(session[k])
+    return out
 
 
 def session_to_sets(session: dict) -> list[tuple[str, str]]:
@@ -733,6 +752,98 @@ def resize_linear(a: np.ndarray, long_edge: int) -> np.ndarray:
     return out
 
 
+# ------------------------------------------------------------------ provenance
+
+TOOL_VERSION = "0.4.0"
+
+
+def file_digest(path: Path, limit: int = 64 * 1024 * 1024) -> str | None:
+    """A short sha256 of the source, so the record names the actual bytes."""
+    import hashlib
+
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            read = 0
+            while chunk := f.read(1 << 20):
+                h.update(chunk)
+                read += len(chunk)
+                if read >= limit:
+                    return h.hexdigest()[:32] + "-partial"
+        return h.hexdigest()[:32]
+    except OSError:
+        return None
+
+
+def provenance_record(session: dict, rend: "Renderer", src: Path, dst: Path,
+                      shape: tuple[int, int] | None = None,
+                      resolved: bool = False) -> dict:
+    """Everything needed to understand, or rebuild, one rendered photograph.
+
+    The session under "session" is the re-runnable part: `spektra --session
+    <this file>` renders it again.  The rest records what the session cannot,
+    the versions it was made with and which bytes went in.
+    """
+    plugin = {"bundle": str(rend.bundle)}
+    try:
+        first = rend.pluginIdentifiers()[0] if hasattr(rend, "pluginIdentifiers") else ""
+    except Exception:
+        first = ""
+    if not first:
+        r = subprocess.run([str(rend.renderer), "--bundle", str(rend.bundle),
+                            "--list-plugins"], capture_output=True)
+        first = r.stdout.decode("utf-8", "replace").splitlines()[:1]
+        first = first[0] if first else ""
+    bits = first.split("\t")
+    if bits and bits[0]:
+        plugin["identifier"] = bits[0]
+    if len(bits) > 1:
+        plugin["version"] = bits[1].lstrip("v")
+
+    seeded = session.get("seed") is not None
+    info = describe_image(src).get("exif", {}) if src.exists() else {}
+
+    record = {
+        "format": "ofx-photo-provenance-v1",
+        "created": __import__("datetime").datetime.now().astimezone().isoformat(
+            timespec="seconds"),
+        "tool": {"name": "ofx-photo", "version": TOOL_VERSION,
+                 "url": "https://github.com/Try2Code/ofx-photo"},
+        "plugin": plugin,
+        "source": {"path": str(src), "sha256": file_digest(src),
+                   "camera": " ".join(x for x in (info.get("Make"),
+                                                  info.get("Model")) if x) or None,
+                   "taken": info.get("DateTimeOriginal")},
+        "result": {"path": str(dst),
+                   "size": [shape[1], shape[0]] if shape else None},
+        "reproducible": seeded,
+        "note": ("Rendering this session again reproduces the image exactly."
+                 if seeded else
+                 "No seed was pinned, so grain, gate weave, flicker and dust "
+                 "were randomised for this render and will differ next time. "
+                 "Everything else reproduces; add a seed to fix those too."),
+        "session": copy.deepcopy(session),
+    }
+    if resolved:
+        # Every parameter as the plugin actually held it, which survives a
+        # preset being redefined in a later plugin version.
+        try:
+            state = rend.by_name(session_to_sets(session))
+            record["resolved_parameters"] = {
+                n: (x["choices"][x["value"]] if x.get("choices")
+                    and 0 <= x["value"] < len(x["choices"]) else x.get("value"))
+                for n, x in sorted(state.items())
+                if x["type"] not in ("OfxParamTypeGroup", "OfxParamTypePushButton")
+            }
+        except SystemExit as e:
+            record["resolved_parameters_error"] = str(e)
+    return record
+
+
+def write_provenance(path: Path, record: dict) -> None:
+    path.write_text(json.dumps(record, indent=2) + "\n")
+
+
 # ---------------------------------------------------------------- preset logic
 
 
@@ -803,7 +914,12 @@ def list_presets(rend: Renderer) -> None:
 
 def session_from_args(args, rend: Renderer) -> dict:
     """Build a session from the command line, starting from --session if given."""
-    s = load_session(args.session) if args.session else default_session()
+    if args.session and args.look_from:
+        sys.exit("spektra: use either --session or --look-from, not both")
+    if args.look_from:
+        s = look_from(load_session(args.look_from))
+    else:
+        s = load_session(args.session) if args.session else default_session()
 
     if args.bundle:
         s["bundle"] = str(args.bundle)
@@ -878,7 +994,8 @@ def render_session(rend: Renderer, session: dict, src: Path) -> tuple[np.ndarray
 
 
 def process_one(rend: Renderer, src: Path, dst: Path, session: dict,
-                save_preset: str | None = None) -> str:
+                save_preset: str | None = None, provenance: str | None = None,
+                provenance_full: bool = False) -> str:
     s = copy.deepcopy(session)
     out, meta = render_session(rend, s, src)
     if save_preset:
@@ -888,7 +1005,16 @@ def process_one(rend: Renderer, src: Path, dst: Path, session: dict,
     meta["processing_note"] = f"spektra (ofx-photo){f' - {preset}' if preset else ''}"
     save_photo(dst, out, int(opts.get("bit_depth", 8)), int(opts.get("quality", 95)),
                meta, keep_metadata=s.get("keep_metadata", True))
-    return f"{src.name} -> {dst}"
+
+    line = f"{src.name} -> {dst}"
+    if provenance:
+        s["input"], s["output"] = str(src), str(dst)
+        s["bundle"] = s.get("bundle") or str(rend.bundle)
+        where = Path(f"{dst}.spektra.json") if provenance == "auto" else Path(provenance)
+        write_provenance(where, provenance_record(s, rend, src, dst,
+                                                  out.shape[:2], provenance_full))
+        line += f"  (+ {where.name})"
+    return line
 
 
 def main() -> None:
@@ -910,6 +1036,11 @@ def main() -> None:
   spektra photo.jpg out.jpg --preset "OIL!" --dump-session look.json
   spektra --session look.json
   spektra --session '{"input":"a.jpg","output":"b.jpg","seed":7}'
+
+  # keep a record of how a photograph was made, and rebuild it later
+  spektra photo.NEF out.jpg --preset "OIL!" --seed 7 --provenance
+  spektra --session out.jpg.spektra.json          # the same image again
+  spektra --look-from out.jpg.spektra.json other.NEF b.jpg   # the look, elsewhere
 
   # the companion plugins: extra passes over the first result
   spektra photo.jpg out.jpg --preset "Marty - Warm" --chain lens
@@ -936,6 +1067,18 @@ def main() -> None:
     ap.add_argument("--chain", action="append", metavar="BUNDLE[:PRESET]",
                     help="run another pass after the first, e.g. --chain lens "
                          "or --chain 'diffuse:Clean Slate' (repeatable)")
+    ap.add_argument("--look-from", metavar="FILE",
+                    help="take only the look from a saved session or settings "
+                         "file - preset, parameters, passes, seed - and leave "
+                         "its crop, preview size and paths behind, so it can "
+                         "be tried on another photograph")
+    ap.add_argument("--provenance", nargs="?", const="auto", metavar="PATH",
+                    help="write the settings used beside the result "
+                         "(default <output>.spektra.json). The file is itself a "
+                         "session, so --session on it renders the image again")
+    ap.add_argument("--provenance-full", action="store_true",
+                    help="also record every parameter as the plugin held it, "
+                         "which survives a preset being redefined later")
     ap.add_argument("--crop", metavar="X,Y,W,H",
                     help="keep a window of the frame, as fractions from the "
                          "top-left, e.g. 0.25,0.25,0.5,0.5 for the middle. The "
@@ -961,7 +1104,8 @@ def main() -> None:
     ap.add_argument("--grep", metavar="TEXT", help="filter --list-params")
     args = ap.parse_args()
 
-    pre = load_session(args.session) if args.session else {}
+    pre = load_session(args.session or args.look_from) if (
+        args.session or args.look_from) else {}
     rend = renderer_for(args.bundle or pre.get("bundle"))
 
     if args.info:
@@ -1033,11 +1177,14 @@ def main() -> None:
 
     if args.jobs > 1 and len(jobs) > 1:
         with ThreadPoolExecutor(max_workers=args.jobs) as ex:
-            for line in ex.map(lambda j: process_one(rend, j[0], j[1], session), jobs):
+            for line in ex.map(lambda j: process_one(
+                    rend, j[0], j[1], session, None,
+                    args.provenance, args.provenance_full), jobs):
                 print(line)
     else:
         for s, d in jobs:
-            print(process_one(rend, s, d, session, args.save_preset))
+            print(process_one(rend, s, d, session, args.save_preset,
+                              args.provenance, args.provenance_full))
 
 
 if __name__ == "__main__":

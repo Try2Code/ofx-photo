@@ -520,6 +520,56 @@ def test_tabbed_layout(h: Harness):
           f"{len(w.widgets)} vs {len(c.widgets)}")
 
 
+def test_provenance(h: Harness):
+    """The settings file must rebuild the image, and move to another photo."""
+    with tempfile.TemporaryDirectory() as td:
+        dst = Path(td) / "out.jpg"
+        s = h.session(preset={"category": "Creative", "selection": "Chromium-Noir"},
+                      params={"filmExposureEv": "1.2"},
+                      crop={"x": 0.1, "y": 0.1, "w": 0.8, "h": 0.8},
+                      preview={"long_edge": 200})
+        out, meta = cli.render_session(h.rend, s, h.photo)
+        cli.save_photo(dst, out, 8, 92, meta)
+
+        s["input"], s["output"] = str(h.photo), str(dst)
+        rec = cli.provenance_record(s, h.rend, h.photo, dst, out.shape[:2])
+        where = Path(td) / "out.jpg.spektra.json"
+        cli.write_provenance(where, rec)
+
+        check("it names the tool and the plugin",
+              rec["tool"]["name"] == "ofx-photo" and "identifier" in rec["plugin"],
+              f"{rec['plugin'].get('identifier')} v{rec['plugin'].get('version')}")
+        check("it names the source bytes", bool(rec["source"]["sha256"]))
+        check("it says whether the render repeats", rec["reproducible"] is True)
+
+        # The record is itself a session.
+        back = cli.load_session(str(where))
+        check("the record loads as a session",
+              back["preset"]["selection"] == "Chromium-Noir"
+              and back["params"]["filmExposureEv"] == "1.2")
+        again, _ = cli.render_session(h.rend, back, h.photo)
+        check("replaying it reproduces the image exactly",
+              np.array_equal(again, out), "max diff %.6f" %
+              float(np.abs(again - out).max()) if again.shape == out.shape else
+              f"{again.shape} vs {out.shape}")
+
+        # A look must travel without dragging the framing along.
+        look = cli.look_from(back)
+        check("the look keeps the grade",
+              look["preset"]["selection"] == "Chromium-Noir"
+              and look["params"]["filmExposureEv"] == "1.2"
+              and look["seed"] == back["seed"])
+        check("and leaves the crop behind", look["crop"] is None)
+        check("and the preview size", look["preview"] is None)
+        check("and the paths", not look["input"] and not look["output"])
+
+        # Unpinned seeds must be declared, not quietly implied.
+        loose = cli.provenance_record(dict(s, seed=None), h.rend, h.photo, dst,
+                                      out.shape[:2])
+        check("an unpinned seed is called out",
+              loose["reproducible"] is False and "seed" in loose["note"].lower())
+
+
 def test_crop(h: Harness):
     """A crop must be a window onto the full render, not a new frame.
 
@@ -1160,6 +1210,7 @@ def main():
         ("gui", lambda: test_gui_model(h)),
         ("tabs", lambda: test_tabbed_layout(h)),
         ("crop", lambda: test_crop(h)),
+        ("provenance", lambda: test_provenance(h)),
         ("metadata", lambda: test_metadata_carried(h, args.raw)),
         ("compare", lambda: test_compare_shows_the_original(h)),
         ("buttons", lambda: test_push_buttons(h)),

@@ -424,6 +424,41 @@ full-frame render.
 The preview shows the whole frame with the discarded part dimmed, so you keep seeing what
 you are giving up. Only the saved file is cut.
 
+## Keeping the settings
+
+`--provenance` writes the settings used beside the result, as
+`<name>.spektra.json`. In the GUI the **+ settings** box next to *Save image…* does the
+same.
+
+```sh
+./spektra photo.NEF out.jpg --preset "OIL!" --seed 7 --provenance
+./spektra --session out.jpg.spektra.json                      # that image again
+./spektra --look-from out.jpg.spektra.json other.NEF b.jpg    # the look, elsewhere
+```
+
+The file is plain and readable, unlike a `.spkpreset`, which is JSON on the outside with
+an obfuscated blob inside. It records the preset, every parameter changed, the passes, the
+crop, the seed, the colourspaces, the plugin version and identifier, the tool version, a
+sha256 of the source, and the camera and capture time.
+
+It is also **itself a session**, so `--session` on it renders the photograph again — bit
+for bit, when a seed was pinned. When one was not, it says so rather than implying more
+than it can deliver:
+
+```json
+"reproducible": false,
+"note": "No seed was pinned, so grain, gate weave, flicker and dust were
+         randomised for this render and will differ next time. Everything else
+         reproduces; add a seed to fix those too."
+```
+
+**`--look-from` is for trying the same treatment on another photograph.** It keeps the
+grade — preset, parameters, passes, seed, colourspaces — and leaves behind the things that
+belong to one picture: the crop, the preview size and the paths.
+
+`--provenance-full` additionally records every parameter as the plugin held it, which
+survives a preset being redefined in a later plugin version.
+
 ## Metadata
 
 The render keeps the photograph's metadata: EXIF, XMP, IPTC, GPS, maker notes — whatever

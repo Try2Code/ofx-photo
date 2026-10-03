@@ -476,8 +476,16 @@ class Window(QMainWindow):
         self.b_full.clicked.connect(self.render_full)
         self.b_save = QPushButton("Save image…")
         self.b_save.clicked.connect(self.save_image)
+        self.chk_prov = QCheckBox("+ settings")
+        self.chk_prov.setChecked(True)
+        self.chk_prov.setToolTip(
+            "Write the settings used beside the image, as <name>.spektra.json.\n"
+            "It records the preset, every change, the crop, the seed and the\n"
+            "plugin version, and it is itself a session: opening it, or passing\n"
+            "it to spektra --session, renders the photograph again.")
         out.addWidget(self.b_full)
         out.addWidget(self.b_save)
+        out.addWidget(self.chk_prov)
         left.addLayout(out)
         lay.addLayout(left, 1)
 
@@ -1274,7 +1282,21 @@ class Window(QMainWindow):
         self.meta["processing_note"] = f"spektra (ofx-photo) - {preset}" if preset \
             else "spektra (ofx-photo)"
         cli.save_photo(path, saved, depth, 95, self.meta)
-        self.statusBar().showMessage(f"saved {path}", 5000)
+        note = f"saved {path.name}"
+
+        if self.chk_prov.isChecked():
+            s = self.session(for_preview=False)
+            s["input"] = str(self.source_path)
+            s["output"] = str(path)
+            s["bundle"] = str(self.rend.bundle)
+            record = cli.provenance_record(s, self.rend, self.source_path, path,
+                                           saved.shape[:2])
+            where = Path(f"{path}.spektra.json")
+            cli.write_provenance(where, record)
+            note += f"  +  {where.name}"
+            if not record["reproducible"]:
+                note += "   (pin the seed to make it exactly repeatable)"
+        self.statusBar().showMessage(note, 9000)
 
     # Buttons that throw something away get asked about first.
     DESTRUCTIVE = {
