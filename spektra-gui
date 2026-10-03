@@ -24,6 +24,10 @@ from PyQt5.QtWidgets import (
 
 HERE = Path(__file__).resolve().parent
 
+# Loading the sibling CLI as a module would otherwise leave a __pycache__
+# directory sitting among the installed programs.
+sys.dont_write_bytecode = True
+
 # Reuse the CLI's plumbing rather than duplicating it.
 _spec = importlib.util.spec_from_loader(
     "spektra_cli", importlib.machinery.SourceFileLoader("spektra_cli", str(HERE / "spektra"))
