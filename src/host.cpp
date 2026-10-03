@@ -344,11 +344,29 @@ bool Host::setParamFromString(const std::string &name, const std::string &value,
     std::string v = lower(trim(value));
     p->vi.assign(1, (v == "1" || v == "true" || v == "yes" || v == "on") ? 1 : 0);
   } else if (p->isDoubleType() || p->isIntType()) {
-    // Multi-component values arrive comma separated.
+    // Multi-component values arrive comma separated.  Every part has to be a
+    // number in full: strtod alone reports 0 for anything it cannot read, so
+    // "1.0,otherParam=0.5" -- someone trying to set two parameters in one
+    // argument -- used to set this one and drop the rest without a word.
     std::vector<double> parts;
     std::stringstream ss(value);
     std::string item;
-    while (std::getline(ss, item, ',')) parts.push_back(std::strtod(trim(item).c_str(), nullptr));
+    while (std::getline(ss, item, ',')) {
+      const std::string token = trim(item);
+      if (token.empty()) {
+        *err = "empty value in '" + value + "' for " + name;
+        return false;
+      }
+      char *end = nullptr;
+      const double v = std::strtod(token.c_str(), &end);
+      if (!end || *end != '\0') {
+        *err = "'" + token + "' is not a number, in '" + value + "' for " + name;
+        if (token.find('=') != std::string::npos)
+          *err += ". Each --set takes one NAME=VALUE; repeat the option for more";
+        return false;
+      }
+      parts.push_back(v);
+    }
     if (parts.empty()) {
       *err = "could not read a number from '" + value + "' for " + name;
       return false;

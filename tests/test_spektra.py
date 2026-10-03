@@ -143,6 +143,23 @@ def test_param_overrides(h: Harness):
               not np.array_equal(plain, out),
               "mean diff %.5f" % float(np.abs(plain - out).mean()))
 
+    # --set takes one NAME=VALUE.  Comma-separating two used to set the first
+    # and drop the rest silently, because strtod reads 0 for what it cannot
+    # parse and says nothing.
+    try:
+        h.render(h.session(preset=base,
+                           params={"filmExposureEv": "1.0,printExposureEv=0.5"}))
+        check("two parameters in one --set is refused", False, "it was accepted")
+    except SystemExit as e:
+        check("two parameters in one --set is refused",
+              "is not a number" in str(e), str(e)[-70:])
+
+    # Genuine multi-component values still parse.
+    two = h.render(h.session(preset=base,
+                             params={"quickVignetteEnabled": "true",
+                                     "vignetteCenter": "10,-5"}))
+    check("a two-part value is accepted", two is not None)
+
     bad = h.session(preset=base, params={"noSuchParameter": "1"})
     try:
         h.render(bad)

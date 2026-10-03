@@ -247,7 +247,7 @@ file claims to be and what it actually decoded to.
 | `--preset NAME` | a bundled preset, matched loosely, with suggestions when wrong |
 | `--user-preset NAME` | one of your own |
 | `--save-preset NAME` | store the current settings as a new one |
-| `--set NAME=VALUE` | any of the 830 parameters, repeatable |
+| `--set NAME=VALUE` | any of the 830 parameters; **repeat the option** for more than one |
 | `--bundle NAME\|PATH` | `film`, `diffuse`, `lens`, `flow`, or a path |
 | `--chain NAME[:PRESET]` | run another pass afterwards, repeatable |
 | `--seed N` | pin every random seed |
@@ -305,6 +305,19 @@ for p in "Marty - Warm" "Chromium-Noir" "CineStill 800T" "Vintage Faded"; do
     spektra photo.NEF "try-${p// /_}.jpg" --preset "$p" --seed 1 --preview
 done
 ```
+
+**Change individual parameters.** One `--set` per parameter; a later one wins over an
+earlier one for the same name. Commas belong to a *value*, not between parameters, so a
+two-part value like an optical centre is a single argument:
+
+```sh
+spektra photo.jpg out.jpg --preset "Marty - Warm" \
+        --set filmExposureEv=1.2 \
+        --set quickGrainEnabled=false \
+        --set quickVignetteEnabled=true --set "vignetteCenter=10,-5"
+```
+
+Writing `--set a=1,b=2` is refused rather than quietly setting `a` and dropping `b`.
 
 **Choose a film stock.** A stock is not a preset: `--preset` takes one of the 88 bundled
 looks, while a stock is a parameter, picked together with its category.
