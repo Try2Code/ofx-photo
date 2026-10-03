@@ -342,6 +342,23 @@ class ImageView(QLabel):
         y = (win.y() + v * win.height()) / self._pm.height()
         return min(max(x, 0.0), 1.0), min(max(y, 0.0), 1.0)
 
+    def _from_fraction(self, x: float, y: float) -> QPoint | None:
+        """A fraction of the whole image back to a widget position.
+
+        The exact inverse of _to_fraction.  Drawing the crop without it used
+        the visible window as though it were the whole picture, so once zoomed
+        the rectangle moved and changed size.
+        """
+        f = self._frame()
+        if not f or not self._pm:
+            return None
+        win = self._source_window()
+        if not win.width() or not win.height():
+            return None
+        u = (x * self._pm.width() - win.x()) / win.width()
+        v = (y * self._pm.height() - win.y()) / win.height()
+        return QPoint(round(f.x() + u * f.width()), round(f.y() + v * f.height()))
+
     def set_zoom(self, zoom: float | None, at: tuple[float, float] | None = None):
         self.zoom = zoom
         if at:
@@ -437,26 +454,33 @@ class ImageView(QLabel):
         if self._drag_from is not None and self._drag_to is not None:
             rect = QRect(self._drag_from, self._drag_to).normalized()
         elif self.crop:
-            rect = QRect(
-                f.x() + int(self.crop["x"] * f.width()),
-                f.y() + int(self.crop["y"] * f.height()),
-                max(1, int(self.crop["w"] * f.width())),
-                max(1, int(self.crop["h"] * f.height())))
+            a = self._from_fraction(self.crop["x"], self.crop["y"])
+            b = self._from_fraction(self.crop["x"] + self.crop["w"],
+                                    self.crop["y"] + self.crop["h"])
+            if a is None or b is None:
+                return
+            rect = QRect(a, b).normalized()
         else:
             return
 
         painter = QPainter(self)
         # Dim what the crop discards, so the kept area reads immediately while
-        # the rest stays visible enough to judge the framing against.
+        # the rest stays visible enough to judge the framing against.  Zoomed
+        # in, the crop can run past the edge of the view, so everything is
+        # clipped to what is actually on screen.
         shade = QColor(0, 0, 0, round((1.0 - CROP_OUTSIDE_BRIGHTNESS) * 255))
-        for part in (QRect(f.x(), f.y(), f.width(), rect.y() - f.y()),
-                     QRect(f.x(), rect.bottom(), f.width(),
-                           f.bottom() - rect.bottom()),
-                     QRect(f.x(), rect.y(), rect.x() - f.x(), rect.height()),
-                     QRect(rect.right(), rect.y(),
-                           f.right() - rect.right(), rect.height())):
+        kept = rect.intersected(f)
+        for part in (QRect(f.x(), f.y(), f.width(), kept.y() - f.y()),
+                     QRect(f.x(), kept.bottom(), f.width(),
+                           f.bottom() - kept.bottom()),
+                     QRect(f.x(), kept.y(), kept.x() - f.x(), kept.height()),
+                     QRect(kept.right(), kept.y(),
+                           f.right() - kept.right(), kept.height())):
+            part = part.intersected(f)
             if part.width() > 0 and part.height() > 0:
                 painter.fillRect(part, shade)
+        if kept.isEmpty():
+            painter.fillRect(f, shade)
         painter.setPen(QPen(QColor("#ffcc55"), 2))
         painter.drawRect(rect)
         painter.end()

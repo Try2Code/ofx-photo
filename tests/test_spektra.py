@@ -842,6 +842,45 @@ def test_zoom_and_pan(h: Harness):
           abs(fitted[0] - zoomed[0]) < 0.02 and abs(fitted[1] - zoomed[1]) < 0.02,
           f"{fitted} vs {zoomed}")
 
+    # Fraction to widget and back must agree, for points that are on screen.
+    # Without the inverse mapping the crop overlay used the visible window as
+    # though it were the whole picture, so a crop drawn while zoomed jumped
+    # elsewhere and changed size.
+    for zoom, centre in ((None, (0.5, 0.5)), (2.0, (0.5, 0.5)), (1.0, (0.4, 0.6))):
+        v.set_zoom(zoom, centre)
+        win = v._source_window()
+        lo_x, hi_x = win.x() / 600, (win.x() + win.width()) / 600
+        lo_y, hi_y = win.y() / 400, (win.y() + win.height()) / 400
+        worst = 0.0
+        for fx, fy in ((0.35, 0.35), (0.5, 0.5), (0.47, 0.58)):
+            if not (lo_x < fx < hi_x and lo_y < fy < hi_y):
+                continue        # off screen, where clamping is the right answer
+            back = v._to_fraction(v._from_fraction(fx, fy))
+            worst = max(worst, abs(back[0] - fx), abs(back[1] - fy))
+        check(f"coordinates round-trip at zoom {zoom}", worst < 0.01,
+              "worst %.4f" % worst)
+
+    # And a crop dragged while zoomed must be drawn back where it was drawn.
+    v.set_zoom(2.0, (0.5, 0.5))
+    fr = v._frame()
+    a = QPoint(fr.x() + int(fr.width() * 0.25), fr.y() + int(fr.height() * 0.25))
+    b = QPoint(fr.x() + int(fr.width() * 0.75), fr.y() + int(fr.height() * 0.75))
+    v.set_cropping(True)
+    v.mousePressEvent(QMouseEvent(QMouseEvent.MouseButtonPress, a,
+                                  _Qt.LeftButton, _Qt.LeftButton, _Qt.NoModifier))
+    v.mouseReleaseEvent(QMouseEvent(QMouseEvent.MouseButtonRelease, b,
+                                    _Qt.LeftButton, _Qt.LeftButton, _Qt.NoModifier))
+    got = v.crop
+    pa = v._from_fraction(got["x"], got["y"])
+    pb = v._from_fraction(got["x"] + got["w"], got["y"] + got["h"])
+    check("a crop drawn while zoomed stays where it was put",
+          abs(pa.x() - a.x()) <= 2 and abs(pa.y() - a.y()) <= 2
+          and abs(pb.x() - b.x()) <= 2 and abs(pb.y() - b.y()) <= 2,
+          f"drew {(a.x(), a.y())}-{(b.x(), b.y())}, "
+          f"shows {(pa.x(), pa.y())}-{(pb.x(), pb.y())}")
+    v.set_cropping(False)
+    v.set_crop(None)
+
     # The button toggles against 1:1, not against being zoomed at all.
     v.set_zoom(0.7)
     w.full_linear = np.zeros((40, 60, 3), np.float32)
