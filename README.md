@@ -25,7 +25,7 @@ cmake -S . -B build && cmake --build build     # build the host
 ## Contents
 
 - [Why this exists](#why-this-exists) · [Install](#install) · [The plugin is not included](#the-plugin-is-not-included)
-- [The GUI](#the-gui) · [The command line](#the-command-line) · [Recipes](#recipes) · [Sessions](#sessions-the-gui-as-json)
+- [The GUI](#the-gui) · [Reusing what you saved](#reusing-what-you-saved) · [The command line](#the-command-line) · [Recipes](#recipes) · [Sessions](#sessions-the-gui-as-json)
 - [Presets](#presets) · [Extra passes](#extra-passes-the-companion-plugins) · [Colour](#colour-what-goes-in-and-what-comes-out)
 - [Raw files](#raw-files) · [Tests](#tests) · [How it works](#how-it-works) · [Gotchas](#gotchas-worth-knowing)
 
@@ -173,6 +173,25 @@ cmd  = ["spektra", "{src}", "{dst}", "--preset", "Marty - Warm", "--raw-ev-bias"
 | **Show every parameter** | all 830, grouped and collapsed |
 | **1:1** (beside Crop) | one screen pixel per image pixel; scroll to zoom, drag to move about |
 | **Render full resolution** | the preview is downscaled; this is the real thing |
+
+### Reusing what you saved
+
+With **+ settings** ticked, saving `sunset.jpg` also writes **`sunset.jpg.spektra.json`**
+beside it. To put that look on another photograph:
+
+```sh
+spektra --look-from sunset.jpg.spektra.json other.NEF other-out.jpg
+```
+
+```sh
+spektra --look-from sunset.jpg.spektra.json shoot/*.NEF graded/ --jobs 2  # a whole shoot
+spektra --session   sunset.jpg.spektra.json                               # rebuild sunset.jpg
+spektra-gui         sunset.jpg.spektra.json                               # reopen it here
+```
+
+`--look-from` wants an input and an output given, because it deliberately leaves the old
+paths behind along with the crop. `--session` needs nothing else, because it still has
+them. More under [Keeping the settings](#keeping-the-settings).
 
 Numeric parameters are **sliders** with a value readout and a ↺ button that returns them
 to whatever the preset said. The button greys out when the value is already there, so you
