@@ -25,7 +25,7 @@ cmake -S . -B build && cmake --build build     # build the host
 ## Contents
 
 - [Why this exists](#why-this-exists) · [Install](#install) · [The plugin is not included](#the-plugin-is-not-included)
-- [The GUI](#the-gui) · [The command line](#the-command-line) · [Sessions](#sessions-the-gui-as-json)
+- [The GUI](#the-gui) · [The command line](#the-command-line) · [Recipes](#recipes) · [Sessions](#sessions-the-gui-as-json)
 - [Presets](#presets) · [Extra passes](#extra-passes-the-companion-plugins) · [Colour](#colour-what-goes-in-and-what-comes-out)
 - [Raw files](#raw-files) · [Tests](#tests) · [How it works](#how-it-works) · [Gotchas](#gotchas-worth-knowing)
 
@@ -261,6 +261,97 @@ file claims to be and what it actually decoded to.
 
 Preset names are matched loosely and suggest alternatives when wrong, which helps: the
 real ones are easy to mistype — `Chromium-Noir`, `CineStill 800T`, `Marty - Warm`, `OIL!`.
+
+## Recipes
+
+Ordinary jobs, start to finish.
+
+**Grade one photograph.**
+
+```sh
+spektra photo.NEF out.jpg --preset "Marty - Warm"
+```
+
+**Find a look, keep it, put it on others.** This is the usual loop: settle a grade on one
+frame, record it, then apply it to the rest.
+
+```sh
+# settle it on one frame, and write the settings beside the result
+spektra photo.NEF out.jpg --preset "CineStill 800T" --set filmExposureEv=0.8 \
+        --seed 3 --provenance
+
+# the same treatment on a different photograph
+spektra --look-from out.jpg.spektra.json other.NEF other-out.jpg
+
+# or on a whole shoot, two at a time
+spektra --look-from out.jpg.spektra.json shoot/*.NEF graded/ --jobs 2
+```
+
+`--look-from` takes the grade — preset, parameters, passes, seed, colourspaces — and
+leaves behind what belonged to the first picture: its crop, its preview size, its paths.
+Use `--session` instead when you want *that* image back, crop and all:
+
+```sh
+spektra --session out.jpg.spektra.json
+```
+
+The file can come from `--provenance`, from `--dump-session`, or from **Export session…**
+in the GUI — they are all the same format.
+
+**Compare several looks on one frame**, quickly, at preview size:
+
+```sh
+for p in "Marty - Warm" "Chromium-Noir" "CineStill 800T" "Vintage Faded"; do
+    spektra photo.NEF "try-${p// /_}.jpg" --preset "$p" --seed 1 --preview
+done
+```
+
+**Choose a film stock.** A stock is not a preset: `--preset` takes one of the 88 bundled
+looks, while a stock is a parameter, picked together with its category.
+
+```sh
+spektra --list-stocks film                     # what each category offers
+spektra photo.NEF out.tif \
+        --set filmCategory="Still Film" --set film="Kodak Portra 400" \
+        --raw-ev-bias --bit-depth 16
+```
+
+The three ways of naming something, which are easy to confuse:
+
+| | |
+|---|---|
+| `--preset "Marty - Warm"` | one of the 88 bundled presets |
+| `--user-preset "My Look"` | one you saved yourself |
+| `--set film="Kodak Portra 400"` | a film stock, which is a parameter |
+
+**Work from a raw file that was deliberately underexposed.** `--raw-ev-bias` undoes the
+exposure compensation the camera recorded:
+
+```sh
+spektra photo.NEF out.tif --preset "Marty - Warm" --raw-ev-bias --bit-depth 16
+```
+
+**Reframe without moving the optics.** The frame is rendered whole, so the vignette and
+grain stay as the camera saw them:
+
+```sh
+spektra photo.NEF out.jpg --preset "OIL!" --crop 0.25,0.1,0.5,0.6
+```
+
+**Try the same grade through a second pass of the companion plugin.**
+
+```sh
+spektra photo.jpg out.jpg --preset "Marty - Warm" --chain diffuse
+```
+
+**See what is available**, when you cannot remember a name:
+
+```sh
+spektra --list-presets                 # 88 bundled, plus your own
+spektra --list-stocks film             # which films each category offers
+spektra --list-params --grep halation  # search all 830 parameters
+spektra --info photo.NEF               # EXIF, ICC, and how it decoded
+```
 
 ## Sessions: the GUI as JSON
 
