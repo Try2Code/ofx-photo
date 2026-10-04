@@ -46,28 +46,60 @@ It turns out to be a small job for this class of plugin:
 
 ## Install
 
-Requirements:
+### 1. Dependencies
 
-| | |
-|---|---|
-| Linux x86_64, glibc 2.28+ | |
-| C++17 compiler and CMake | builds `spektra-render` |
-| Vulkan 1.2 and a working driver | required by the spektrafilm plugin itself |
-| Python 3 with `numpy`, `Pillow` | the CLI |
-| `PyQt5` | the GUI |
-| `libraw-bin` (`dcraw_emu`) | camera raw, optional |
-| ImageMagick (`convert`) | 16-bit output and ICC conversion, optional |
-| `exiftool` | carrying metadata onto the result, optional |
-
-Either run it from the checkout:
+On Debian or Ubuntu, everything in one line:
 
 ```sh
-cmake -S . -B build && cmake --build build
-./tests/test_spektra.py                        # check it works
-./install-desktop.sh                            # --uninstall reverses it
+sudo apt install cmake g++ python3-numpy python3-pil python3-pyqt5 \
+                 libvulkan1 mesa-vulkan-drivers \
+                 libimage-exiftool-perl imagemagick libraw-bin desktop-file-utils
 ```
 
-or install it into a prefix:
+What each is for, and what happens without it:
+
+| | | missing? |
+|---|---|---|
+| `cmake`, `g++` | builds `spektra-render` | nothing works |
+| `python3-numpy`, `python3-pil` | the CLI | nothing works |
+| `python3-pyqt5` | the GUI | the CLI still works |
+| `libvulkan1` + a driver | the plugin renders with Vulkan | nothing renders |
+| `libimage-exiftool-perl` | carries metadata onto the result | only basic EXIF is kept, and it says so |
+| `imagemagick` | 16-bit output, wide-gamut input | 16-bit falls back to 8-bit, and it says so |
+| `libraw-bin` | camera raw | raw files are refused with a note |
+| `desktop-file-utils` | validates the menu entry | the entry still installs |
+
+Also needed: Linux x86_64 with glibc 2.28 or newer, Python 3.9+, and a GPU with a working
+Vulkan 1.2 driver. Software rendering works too — CI runs the whole suite on Mesa's
+lavapipe — but it is far slower.
+
+### 2. Build
+
+```sh
+cmake -S . -B build
+cmake --build build
+```
+
+### 3. Check it works
+
+```sh
+./tests/test_spektra.py
+```
+
+With no plugin installed this runs the ~30 checks that do not need one, and says so. With
+the plugin present it runs everything, which takes a couple of minutes.
+
+### 4. Install, or run from here
+
+Run it in place:
+
+```sh
+./spektra photo.jpg out.jpg --preset "Marty - Warm"
+./spektra-gui photo.jpg
+./install-desktop.sh                 # menu entry and Open With; --uninstall reverses it
+```
+
+Or install into a prefix:
 
 ```sh
 cmake -S . -B build -DCMAKE_INSTALL_PREFIX=~/local
@@ -89,16 +121,9 @@ So the only thing a non-standard prefix needs is `PATH`, which the installer pri
 export PATH="$HOME/local/bin:$PATH"
 ```
 
-The three tools find each other by sitting together in one `bin`, so a prefix can be moved
-or renamed freely.
+### 5. The plugin
 
-`install-desktop.sh` adds a **Spektra Photo** entry to the applications menu and to the
-*Open With* list for JPEG, PNG, TIFF and the common raw formats. It writes only under
-`$HOME` and needs no root. To make it the default for a format:
-
-```sh
-xdg-mime default ofx-photo.desktop image/x-nikon-nef
-```
+It is not included and must be obtained separately — see below.
 
 ## The plugin is not included
 
