@@ -61,6 +61,43 @@ jobs:
           done
           echo "every shipped icon installed"
 
+  # The dependency list in the README, on a bare distribution.  The runner
+  # image has build tools preinstalled, so only a clean container can tell
+  # whether that list is actually complete -- it was missing "make", and
+  # nothing here could have noticed.
+  documented-install:
+    name: Install as the README says, on a bare Ubuntu LTS
+    runs-on: ubuntu-latest
+    container: ubuntu:24.04
+    steps:
+      - name: Install exactly what the README lists
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
+            cmake make g++ python3-numpy python3-pil python3-pyqt5 \
+            libvulkan1 mesa-vulkan-drivers \
+            libimage-exiftool-perl imagemagick libraw-bin desktop-file-utils \
+            git ca-certificates
+
+      - uses: actions/checkout@v4
+
+      # Exactly the commands under "Build" and "Check it works".
+      - name: Build and check, following the README
+        run: |
+          cmake -S . -B build
+          cmake --build build -j"$(nproc)"
+          QT_QPA_PLATFORM=offscreen ./tests/test_spektra.py --bundle /nonexistent
+
+      - name: Install to a prefix, following the README
+        run: |
+          cmake -S . -B prefix-build -DCMAKE_INSTALL_PREFIX=/opt/ofx
+          cmake --build prefix-build -j"$(nproc)"
+          cmake --install prefix-build
+          test -x /opt/ofx/bin/spektra
+          test -x /opt/ofx/bin/spektra-gui
+          test -x /opt/ofx/bin/spektra-render
+
   # The real thing, against the plugin, on software Vulkan.
   full:
     name: Full checks against the plugin

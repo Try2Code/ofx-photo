@@ -51,7 +51,7 @@ It turns out to be a small job for this class of plugin:
 On Debian or Ubuntu, everything in one line:
 
 ```sh
-sudo apt install cmake g++ python3-numpy python3-pil python3-pyqt5 \
+sudo apt install cmake make g++ python3-numpy python3-pil python3-pyqt5 \
                  libvulkan1 mesa-vulkan-drivers \
                  libimage-exiftool-perl imagemagick libraw-bin desktop-file-utils
 ```
@@ -60,7 +60,7 @@ What each is for, and what happens without it:
 
 | | | missing? |
 |---|---|---|
-| `cmake`, `g++` | builds `spektra-render` | nothing works |
+| `cmake`, `make`, `g++` | builds `spektra-render` | nothing works |
 | `python3-numpy`, `python3-pil` | the CLI | nothing works |
 | `python3-pyqt5` | the GUI | the CLI still works |
 | `libvulkan1` + a driver | the plugin renders with Vulkan | nothing renders |
