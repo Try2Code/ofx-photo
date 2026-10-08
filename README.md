@@ -113,7 +113,21 @@ prefix is `~/.local`, which needs no root.
 The **menu entry and icons go to `$XDG_DATA_HOME`** (`~/.local/share`) whatever the prefix,
 because a desktop session reads its environment at login and never sees a shell rc — put
 them under `~/local/share` and the launcher simply never appears, however `PATH` is set.
-Pass `-DDESKTOP_TO_PREFIX=ON` to override that.
+Pass `-DDESKTOP_TO_PREFIX=ON` to override that. A prefix below `/tmp` is taken as a trial
+install and keeps its entry to itself automatically, so trying a build out cannot overwrite
+the one your menu is using.
+
+**If the window shows a generic icon**, the icons are rarely the problem — check the entry:
+
+```sh
+desktop-file-validate ~/.local/share/applications/ofx-photo.desktop
+grep ^Exec= ~/.local/share/applications/ofx-photo.desktop   # must name a program that exists
+```
+
+glib discards a desktop entry whose `Exec` program is missing, and on Wayland the window
+carries only `app_id=ofx-photo` — the icon comes from the matching entry, so when the entry
+is discarded there is nothing to match and you get the fallback. Re-running `cmake --install`
+from the build you actually use rewrites it.
 
 So the only thing a non-standard prefix needs is `PATH`, which the installer prints:
 

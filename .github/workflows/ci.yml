@@ -98,6 +98,29 @@ jobs:
           test -x /opt/ofx/bin/spektra-gui
           test -x /opt/ofx/bin/spektra-render
 
+      # glib throws away a desktop entry whose Exec program is missing, and a
+      # discarded entry means the window manager has no icon to show.  That is
+      # invisible unless something checks, so check.
+      - name: The menu entry is one a desktop will actually accept
+        run: |
+          entry="$HOME/.local/share/applications/ofx-photo.desktop"
+          test -f "$entry"
+          desktop-file-validate "$entry"
+          grep -qx 'Exec=/opt/ofx/bin/spektra-gui %f' "$entry"
+          test -f "$HOME/.local/share/icons/hicolor/256x256/apps/ofx-photo.png"
+          # glib's own rule, applied here so the job needs no extra package:
+          # the program named by Exec must exist, or the entry is discarded.
+          test -x "$(awk -F'=' '/^Exec=/{print $2}' "$entry" | awk '{print $1}')"
+
+      - name: A trial install under /tmp leaves the real menu entry alone
+        run: |
+          before=$(sha1sum "$HOME/.local/share/applications/ofx-photo.desktop")
+          cmake -S . -B tmp-build -DCMAKE_INSTALL_PREFIX=/tmp/trial
+          cmake --build tmp-build -j"$(nproc)"
+          cmake --install tmp-build
+          test -f /tmp/trial/share/applications/ofx-photo.desktop
+          test "$before" = "$(sha1sum "$HOME/.local/share/applications/ofx-photo.desktop")"
+
   # The real thing, against the plugin, on software Vulkan.
   full:
     name: Full checks against the plugin
