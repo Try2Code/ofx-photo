@@ -1292,6 +1292,87 @@ def test_cli_entry():
     check("the examples mention the companion passes", "--chain" in r.stdout)
 
 
+def test_render_server(h: Harness):
+    """The long-lived host answers exactly as a fresh one did."""
+    import numpy as np
+    img = np.full((120, 160, 3), 0.35, np.float32)
+    seed = cli.seed_sets(42)
+
+    fresh = cli.Renderer(cli.find_renderer(), h.rend.bundle)
+    want = fresh.render(img, seed)
+    fresh.close()
+
+    r = cli.Renderer(cli.find_renderer(), h.rend.bundle)
+    first = r.render(img, seed)
+    check("a reused server renders the same frame identically",
+          np.array_equal(first, want))
+
+    # Parameters live on the instance, so one left out of a later render has
+    # to be put back or it would silently carry over.
+    changed = r.render(img, seed + [("filmExposureEv", "2.0")])
+    check("a parameter still changes the render", not np.array_equal(changed, want))
+    check("and leaving it out restores the default",
+          np.array_equal(r.render(img, seed), want))
+    other = r.render(img, seed + [("printShadowShape", "1.5")])
+    check("a second parameter changes it too", not np.array_equal(other, want))
+    check("and is restored in its turn", np.array_equal(r.render(img, seed), want))
+
+    # A size it has not seen must work on the same instance.
+    tall = np.full((200, 90, 3), 0.35, np.float32)
+    check("a different frame size is handled", r.render(tall, seed).shape[:2] == (200, 90))
+    check("and the first size still is", np.array_equal(r.render(img, seed), want))
+
+    ok = True
+    try:
+        r.render(img, seed + [("noSuchParameter", "1")])
+        ok = False
+    except SystemExit as e:
+        check("an unknown parameter is reported", "noSuchParameter" in str(e), str(e)[:60])
+    if not ok:
+        check("an unknown parameter is reported", False, "it was accepted")
+    check("and the server survives to render again",
+          np.array_equal(r.render(img, seed), want))
+    r.close()
+
+
+def test_exiftool_session():
+    """The kept-open exiftool copies what the old two-pass run did."""
+    import shutil as sh
+    import subprocess as sp
+    if not sh.which("exiftool"):
+        check("exiftool session", True, "skipped - exiftool not installed")
+        return
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        src, dst = d / "src.jpg", d / "dst.jpg"
+        synthetic_photo(src, 64, 48)
+        et = cli.ExifTool.get()
+        ok, why = et.run("-q", "-q", "-overwrite_original", "-m",
+                         "-Make=Nikon", "-Model=Z 7", "-ISO=400", str(src))
+        check("a session writes tags", ok, why)
+        sh.copy(src, dst)
+        ok, why = cli.copy_metadata(src, dst, "spektra test")
+        check("copy_metadata succeeds over the session", ok, why)
+        out = sp.run(["exiftool", "-s", "-Make", "-Model", "-ISO",
+                      "-ProcessingSoftware", "-Orientation", str(dst)],
+                     capture_output=True, text=True).stdout
+        for tag in ("Nikon", "Z 7", "400", "spektra test"):
+            check(f"the result carries {tag!r}", tag in out)
+        check("orientation is reset for the written pixels",
+              "Horizontal" in out or "Normal" in out, out.strip()[:60])
+
+        bad = d / "bad.jpg"
+        bad.write_text("not an image")
+        ok, why = et.run("-q", "-q", "-overwrite_original", "-m",
+                         "-Orientation#=1", str(bad))
+        check("a bad file is reported rather than passed over",
+              not ok and "rror" in why, why[:60])
+        ok, _ = et.run("-q", "-q", "-overwrite_original", "-m",
+                       "-Orientation#=1", str(dst))
+        check("and the session still works afterwards", ok)
+        et.close()
+
+
 def test_no_clobber():
     """Existing files are not replaced without --force."""
     import subprocess as sp
@@ -1384,6 +1465,7 @@ def main():
         ("binary", test_host_binary),
         ("cli", test_cli_entry),
         ("no-clobber", test_no_clobber),
+        ("exiftool-session", test_exiftool_session),
     ]
 
     suite = [
@@ -1412,6 +1494,7 @@ def main():
         ("compare", lambda: test_compare_shows_the_original(h)),
         ("zoom", lambda: test_zoom_and_pan(h)),
         ("buttons", lambda: test_push_buttons(h)),
+        ("server", lambda: test_render_server(h)),
     ]
 
     for name, fn in offline + (suite if h else []):

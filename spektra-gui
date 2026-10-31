@@ -1585,6 +1585,10 @@ class Window(QMainWindow):
 
     def closeEvent(self, e):
         self.settings.setValue("geometry", self.saveGeometry())
+        # Let a render in flight finish before the host it is talking to goes.
+        if self.job and self.job.isRunning():
+            self.job.wait(5000)
+        cli._shut_down_helpers()
         super().closeEvent(e)
 
 

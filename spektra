@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import copy
+import functools
 import difflib
 import json
 import os
@@ -14,6 +16,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -131,6 +134,30 @@ def renderer_for(bundle: str | None) -> "Renderer":
     return _renderers[path]
 
 
+@atexit.register
+def _shut_down_helpers() -> None:
+    """Stop every helper, whichever thread started it.
+
+    Worker threads keep their own, and nothing else would reach those: an
+    exiftool session outlives the closing of its stdin and would sit there
+    until the machine is rebooted.
+    """
+    with _helpers_lock:
+        procs, _helpers[:] = list(_helpers), []
+    for proc in procs:
+        if proc.poll() is not None:
+            continue
+        try:
+            if proc.stdin and not proc.stdin.closed:
+                proc.stdin.write("-stay_open\nFalse\n" if "exiftool" in proc.args[0]
+                                 else "quit\n")
+                proc.stdin.flush()
+                proc.stdin.close()
+            proc.wait(timeout=5)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            proc.kill()
+
+
 # ------------------------------------------------------------------ sfraw I/O
 
 
@@ -139,8 +166,9 @@ def sfraw_write(path: Path, rgba: np.ndarray) -> None:
     with open(path, "wb") as f:
         f.write(b"SFRW")
         f.write(struct.pack("<III", w, h, c))
-        # OFX scanlines run bottom-up.
-        f.write(np.ascontiguousarray(rgba[::-1], dtype="<f4").tobytes())
+        # OFX scanlines run bottom-up.  tofile hands the buffer straight to
+        # the write; tobytes copied all thirty megabytes of it first.
+        np.ascontiguousarray(rgba[::-1], dtype="<f4").tofile(f)
 
 
 def sfraw_read(path: Path) -> np.ndarray:
@@ -157,6 +185,23 @@ def sfraw_read(path: Path) -> np.ndarray:
 
 def srgb_to_linear(x: np.ndarray) -> np.ndarray:
     return np.where(x <= 0.04045, x / 12.92, ((x + 0.055) / 1.055) ** 2.4)
+
+
+@functools.lru_cache(maxsize=2)
+def srgb_table(levels: int) -> np.ndarray:
+    """srgb_to_linear for every value an integer image can hold.
+
+    An 8-bit photograph has 256 distinct values per channel, so running the
+    piecewise curve over several million pixels computes the same 256 answers
+    again and again.  Looking them up instead is not an approximation: the
+    table is built with the same expression, so the result is bit for bit what
+    the curve gave.
+    """
+    # Built in float32, and divided by the same scale, so that it reproduces
+    # what the curve gave when it ran over the image itself.  float64 here
+    # would be more accurate and would not match.
+    return srgb_to_linear(np.arange(levels, dtype=np.float32)
+                          / np.float32(levels - 1)).astype(np.float32)
 
 
 def linear_to_srgb(x: np.ndarray) -> np.ndarray:
@@ -190,18 +235,19 @@ def load_photo(path: Path, raw_linear: bool = True) -> tuple[np.ndarray, str, di
         im = im.convert("RGB")
     a = np.asarray(im)
     if a.dtype == np.uint8:
-        a = a.astype(np.float32) / 255.0
+        a = srgb_table(256)[a]
     elif a.dtype == np.uint16:
-        a = a.astype(np.float32) / 65535.0
+        a = srgb_table(65536)[a]
     else:
         a = a.astype(np.float32)
         if a.max() > 1.0:
             a /= a.max()
+        a = srgb_to_linear(a).astype(np.float32)
     if a.ndim == 2:
         a = np.stack([a] * 3, -1)
     if a.shape[2] == 4:
         a = a[..., :3]
-    return srgb_to_linear(a).astype(np.float32), "Linear Rec.709", meta
+    return a, "Linear Rec.709", meta
 
 
 def read_exposure_bias(path: Path) -> float | None:
@@ -399,6 +445,102 @@ def load_raw(path: Path) -> np.ndarray:
         return read_ppm16(out[0])
 
 
+_helpers: list = []
+_helpers_lock = threading.Lock()
+
+
+def _die_with_parent() -> None:
+    """Ask the kernel to signal this child when its parent goes.
+
+    The registry below covers every ordinary exit, but nothing in the process
+    can run after SIGKILL, and exiftool -stay_open waits for a command for
+    ever: closing its stdin does not end it, unlike the render host.  This is
+    the only thing that still cleans up when spektra is killed outright.
+    """
+    try:
+        import ctypes, signal
+        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
+    except Exception:
+        pass
+
+
+def _spawn_helper(cmd: list[str], **kw) -> subprocess.Popen:
+    proc = subprocess.Popen(cmd, preexec_fn=_die_with_parent, **kw)
+    with _helpers_lock:
+        _helpers.append(proc)
+    return proc
+
+
+class ExifTool:
+    """One exiftool process per thread, kept open across files.
+
+    Starting exiftool costs about 190 ms -- it is a large Perl program -- and
+    a copy needs two passes, so spawning it per image cost far more than the
+    render it was decorating.  With -stay_open the same two passes cost about
+    22 ms.  One per thread, because a session answers one request at a time.
+
+    Each request ends with -execute, and exiftool then writes {readyN} to both
+    streams, which is how we know a reply is complete.
+    """
+
+    _local = threading.local()
+
+    @classmethod
+    def get(cls) -> "ExifTool":
+        et = getattr(cls._local, "it", None)
+        if et is None or et.proc.poll() is not None:
+            et = cls()
+            cls._local.it = et
+        return et
+
+    def __init__(self) -> None:
+        self.n = 0
+        self.proc = _spawn_helper(
+            [shutil.which("exiftool"), "-stay_open", "True", "-@", "-"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, bufsize=1)
+
+    def _drain(self, stream, token: str) -> str:
+        out = []
+        for line in stream:
+            if line.strip() == token:
+                break
+            out.append(line)
+        return "".join(out).strip()
+
+    def run(self, *args: str) -> tuple[bool, str]:
+        """Returns (ok, message).  A message only when something went wrong."""
+        self.n += 1
+        token = f"{{ready{self.n}}}"
+        try:
+            self.proc.stdin.write("\n".join(args) + f"\n-echo4\n{token}\n"
+                                  f"-execute{self.n}\n")
+            self.proc.stdin.flush()
+            self._drain(self.proc.stdout, token)
+            errs = self._drain(self.proc.stderr, token)
+        except OSError:
+            self.close()
+            return False, "exiftool stopped responding"
+        # exiftool reports trouble on stderr and still exits 0 under
+        # -stay_open, so the message is the only thing to go on.
+        for line in errs.splitlines():
+            if line.lower().startswith(("error", "warning: error")):
+                return False, line.strip()
+        return True, ""
+
+    def close(self) -> None:
+        proc = getattr(self._local, "it", None)
+        proc = proc.proc if proc else None
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.stdin.write("-stay_open\nFalse\n")
+                proc.stdin.flush()
+                proc.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                proc.kill()
+        type(self)._local.it = None
+
+
 def copy_metadata(src: Path, dst: Path, note: str | None = None) -> tuple[bool, str]:
     """Carry the original's metadata onto the rendered file.
 
@@ -416,8 +558,7 @@ def copy_metadata(src: Path, dst: Path, note: str | None = None) -> tuple[bool, 
       whatever the source was tagged as.
     * The pixel dimensions, which differ whenever the render was resized.
     """
-    exiftool = shutil.which("exiftool")
-    if not exiftool:
+    if not shutil.which("exiftool"):
         return False, "exiftool is not installed, so only basic EXIF was kept"
 
     try:
@@ -426,18 +567,17 @@ def copy_metadata(src: Path, dst: Path, note: str | None = None) -> tuple[bool, 
     except Exception:
         width = height = None
 
-    copy = [exiftool, "-q", "-q", "-overwrite_original", "-m",
-            "-TagsFromFile", str(src), "-all:all", "--ICC_Profile", str(dst)]
-    r = subprocess.run(copy, capture_output=True)
-    if r.returncode != 0:
-        return False, (r.stderr.decode("utf-8", "replace").strip()
-                       or "exiftool could not copy the metadata")
+    et = ExifTool.get()
+    ok, why = et.run("-q", "-q", "-overwrite_original", "-m",
+                     "-TagsFromFile", str(src), "-all:all", "--ICC_Profile", str(dst))
+    if not ok:
+        return False, why or "exiftool could not copy the metadata"
 
     # A second pass for the tags that must describe this file rather than the
     # source.  They cannot ride along with -TagsFromFile: the copy wins over
     # assignments made in the same invocation, which once left an already
     # rotated photograph tagged "Rotate 180" and so shown upside down.
-    fix = [exiftool, "-q", "-q", "-overwrite_original", "-m",
+    fix = ["-q", "-q", "-overwrite_original", "-m",
            "-Orientation#=1", "-ColorSpace=sRGB"]
     if width:
         fix += [f"-ExifImageWidth={width}", f"-ExifImageHeight={height}",
@@ -445,10 +585,9 @@ def copy_metadata(src: Path, dst: Path, note: str | None = None) -> tuple[bool, 
     if note:
         fix += [f"-ProcessingSoftware={note}", f"-XMP-xmp:CreatorTool={note}"]
     fix.append(str(dst))
-    r = subprocess.run(fix, capture_output=True)
-    if r.returncode != 0:
-        return False, (r.stderr.decode("utf-8", "replace").strip()
-                       or "exiftool could not correct the copied tags")
+    ok, why = et.run(*fix)
+    if not ok:
+        return False, why or "exiftool could not correct the copied tags"
     return True, "metadata copied"
 
 
@@ -509,6 +648,25 @@ def save_photo(path: Path, display_rgb: np.ndarray, bit_depth: int, quality: int
             print(f"spektra: {why}", file=sys.stderr)
 
 
+def param_value_string(p: dict) -> str | None:
+    """A parameter's value in the form --set and the server accept back.
+
+    Groups and push buttons carry no value; choices go back as the index,
+    which the host takes as readily as the label and cannot be ambiguous.
+    """
+    v = p.get("value")
+    t = p.get("type", "")
+    if v is None or t in ("OfxParamTypeGroup", "OfxParamTypePushButton"):
+        return None
+    if t == "OfxParamTypeString":
+        return str(v)
+    if t == "OfxParamTypeChoice":
+        return str(int(v))
+    if isinstance(v, list):
+        return ",".join(repr(float(x)) if isinstance(x, float) else str(x) for x in v)
+    return str(v)
+
+
 # ------------------------------------------------------------ the render call
 
 
@@ -516,6 +674,8 @@ class Renderer:
     def __init__(self, renderer: Path, bundle: Path):
         self.renderer, self.bundle = renderer, bundle
         self._params: list[dict] | None = None
+        self._default_strings: dict[str, str] | None = None
+        self._local = threading.local()
 
     def describe(self, sets: list[tuple[str, str]] | None = None) -> list[dict]:
         cmd = [str(self.renderer), "--bundle", str(self.bundle), "--list-params"]
@@ -553,20 +713,88 @@ class Renderer:
                 break
         return r.returncode == 0, note
 
+    # ---------------------------------------------------- the render server
+    #
+    # The plugin builds its pipeline on the first render of an instance: a
+    # quarter of a second, against about fifteen milliseconds for each render
+    # after it.  Spawning the host per image paid that every time, so the host
+    # is kept alive instead and spoken to over a pipe.  Destroying the
+    # instance would throw the pipeline away again, so one instance serves
+    # every render and parameters accumulate on it -- which is why anything
+    # set for an earlier render and left out of this one is put back to its
+    # default here.
+    #
+    # One server per thread, since a server renders one frame at a time and
+    # --jobs wants several at once.
+
+    def _server(self):
+        local = self._local
+        proc = getattr(local, "proc", None)
+        if proc is not None and proc.poll() is None:
+            return proc
+        proc = _spawn_helper(
+            [str(self.renderer), "--bundle", str(self.bundle), "--serve"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+        local.proc, local.applied = proc, {}
+        return proc
+
+    def _defaults(self) -> dict[str, str]:
+        """What every parameter reads as before anything has been set."""
+        if self._default_strings is None:
+            self._default_strings = {p["name"]: param_value_string(p)
+                                     for p in self.params
+                                     if param_value_string(p) is not None}
+        return self._default_strings
+
+    def close(self) -> None:
+        proc = getattr(self._local, "proc", None)
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.stdin.write("quit\n")
+                proc.stdin.flush()
+                proc.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                proc.kill()
+        self._local.proc = None
+
     def render(self, linear_rgb: np.ndarray, sets: list[tuple[str, str]]) -> np.ndarray:
         h, w = linear_rgb.shape[:2]
         rgba = np.ones((h, w, 4), np.float32)
         rgba[..., :3] = linear_rgb[..., :3]
+        proc = self._server()
+        # The plugin draws its own seeds when the instance is created, so a
+        # process per render used to give every frame its own grain.  One
+        # instance serving a whole batch would instead stamp the same grain,
+        # dust and weave on every photograph in it, so an unpinned render gets
+        # a fresh seed here.  Anything the caller pinned is in sets and comes
+        # afterwards, so it still wins.
+        if not any(n in dict(sets) for n in SEED_PARAMS):
+            sets = seed_sets(random.randrange(1 << 30)) + list(sets)
+        wanted = dict(sets)
+        # Put back whatever the last render on this server set and this one
+        # does not, so a reused instance answers exactly as a fresh one would.
+        stale = [(n, self._defaults()[n])
+                 for n in self._local.applied
+                 if n not in wanted and n in self._defaults()]
         with tempfile.TemporaryDirectory() as td:
             src, dst = Path(td) / "in.sfraw", Path(td) / "out.sfraw"
             sfraw_write(src, rgba)
-            cmd = [str(self.renderer), "--bundle", str(self.bundle)]
-            for k, v in sets:
-                cmd += ["--set", f"{k}={v}"]
-            cmd += ["--in", str(src), "--out", str(dst)]
-            r = subprocess.run(cmd, capture_output=True)
-            if r.returncode != 0:
-                sys.exit(f"spektra: {r.stderr.decode().strip()}")
+            try:
+                proc.stdin.write(f"render\n{src}\n{dst}\n")
+                for k, v in stale + list(sets):
+                    proc.stdin.write(f"{k}={v}\n")
+                proc.stdin.write("\n")
+                proc.stdin.flush()
+                reply = proc.stdout.readline()
+            except OSError:
+                reply = ""
+            if not reply:
+                self._local.proc = None
+                sys.exit("spektra: the render host stopped responding")
+            if not reply.startswith("ok "):
+                self._local.applied = wanted
+                sys.exit(f"spektra: {reply[4:].strip() if reply.startswith('err ') else reply.strip()}")
+            self._local.applied = wanted
             return sfraw_read(dst)
 
 

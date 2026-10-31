@@ -742,10 +742,10 @@ plugin enters this repository.
                        │
                        │  .sfraw  (float32 RGBA, y-up)
                        ▼
-                 spektra-render (C++)
+                 spektra-render --serve (C++), kept alive
                   · dlopen the .ofx bundle
                   · describe → describeInContext(Filter) → createInstance
-                  · set parameters, bind clips, render one frame
+                  · per request: set parameters, bind clips, render one frame
                        │
                        │  .sfraw, repeated for each chained pass
                        ▼
@@ -753,9 +753,26 @@ plugin enters this repository.
                   · quantise, write JPEG / PNG / TIFF
 ```
 
-The host runs as a **one-shot child process**: the plugin initialises Vulkan and allocates
-sizeable GPU resources, so a fresh process per render guarantees clean teardown and keeps
-a plugin crash from taking the GUI down with it.
+The host is **kept alive and spoken to over a pipe** (`spektra-render --serve`). The plugin
+builds its pipeline on the first render of an instance -- about 250 ms, against 15 ms for
+every render after it -- and destroying the instance throws that work away, so one instance
+serves the whole run. One host per thread, since a host renders one frame at a time and
+`--jobs` wants several at once. A batch of 32 photographs runs 2.2x faster serially and
+3.2x at `--jobs 4` than it did with a process per render.
+
+Because the instance persists, parameters accumulate on it. The Python side therefore puts
+back anything it set for an earlier render and leaves out of this one, so a reused host
+answers exactly as a fresh one did -- verified byte for byte. For the same reason an
+unpinned render is given a fresh seed per frame: the plugin draws its seeds when the
+instance is created, and one instance would otherwise stamp the same grain on every
+photograph in a batch.
+
+`exiftool` is kept open the same way, with `-stay_open`. Starting it costs about 190 ms and
+a metadata copy needs two passes, so it cost more than the render it was decorating; over a
+session the two passes come to about 22 ms. Both helpers are registered and stopped when
+spektra exits, and carry `PR_SET_PDEATHSIG` so that killing spektra outright does not leave
+them behind -- `exiftool -stay_open` waits for a command for ever and does not notice its
+input closing.
 
 Both the GUI and the CLI build their parameter lists from what the plugin reports at
 describe time, and share one render pipeline. **No parameter names are hard-coded**, so
@@ -764,7 +781,9 @@ the tools survive plugin updates.
 ## Gotchas worth knowing
 
 **Renders vary between runs unless you pin the seed.** The plugin randomises its grain,
-gate weave, flicker and dust seeds for each new instance. `--seed N` fixes all of them.
+gate weave, flicker and dust seeds for each new instance, and spektra draws a fresh set for
+every unpinned frame so that a batch does not repeat one grain pattern across it. `--seed N`
+fixes all of them, and then the same input gives the same bytes.
 
 **Choosing a preset for an effect switches that effect on.** The plugin keeps the preset
 and the enable as separate parameters, so picking a vignette preset while vignette is off

@@ -133,14 +133,64 @@ void usage() {
       "  --params FILE      read NAME=VALUE lines from a file\n"
       "  --in FILE          input .sfraw\n"
       "  --out FILE         output .sfraw\n"
+      "  --serve            keep the plugin loaded and render on request\n"
       "  -h, --help         this text\n";
+}
+
+// ------------------------------------------------------------------ serving
+//
+// Creating the plugin's instance is cheap; its first render is not, because
+// that is when the pipeline is built -- a quarter of a second, against about
+// fifteen milliseconds for every render after it.  Destroying the instance
+// throws that work away, so one instance is held for the life of the process
+// and parameters simply accumulate on it.  The caller is therefore the one
+// that has to say what every parameter should be, which is why the Python
+// side restores anything it set earlier and does not set now.
+//
+// A request is the word "render", the two paths, then NAME=VALUE lines, ended
+// by a blank line.  The reply is a single line: "ok WIDTH HEIGHT", or "err "
+// and a message.  Paths come one to a line so spaces in them need no quoting.
+
+int serve(Host &host) {
+  std::string line;
+  while (std::getline(std::cin, line)) {
+    if (line == "quit") return 0;
+    if (line != "render") {
+      std::cout << "err unknown request: " << line << "\n" << std::flush;
+      continue;
+    }
+    std::string in, out;
+    if (!std::getline(std::cin, in) || !std::getline(std::cin, out)) return 0;
+
+    std::string err;
+    bool bad = false;
+    while (std::getline(std::cin, line) && !line.empty()) {
+      size_t eq = line.find('=');
+      if (eq == std::string::npos) {
+        if (!bad) { err = "expected NAME=VALUE, got: " + line; bad = true; }
+      } else if (!bad &&
+                 !host.setParamFromString(line.substr(0, eq), line.substr(eq + 1), &err)) {
+        bad = true;
+      }
+    }
+    if (bad) { std::cout << "err " << err << "\n" << std::flush; continue; }
+
+    Image source, output;
+    if (!readSfraw(in, source, &err) || !host.render(source, output, &err) ||
+        !writeSfraw(out, output, &err)) {
+      std::cout << "err " << err << "\n" << std::flush;
+      continue;
+    }
+    std::cout << "ok " << output.width << " " << output.height << "\n" << std::flush;
+  }
+  return 0;
 }
 
 }  // namespace
 
 int main(int argc, char **argv) {
   std::string bundle, plugin, inPath, outPath, paramFile;
-  bool listPlugins = false, listParams = false;
+  bool listPlugins = false, listParams = false, serveMode = false;
   std::vector<std::pair<std::string, std::string>> sets;
 
   for (int i = 1; i < argc; ++i) {
@@ -156,6 +206,7 @@ int main(int argc, char **argv) {
     else if (a == "--params") paramFile = next("--params");
     else if (a == "--list-plugins") listPlugins = true;
     else if (a == "--list-params") listParams = true;
+    else if (a == "--serve") serveMode = true;
     else if (a == "--set") {
       std::string kv = next("--set");
       size_t eq = kv.find('=');
@@ -199,6 +250,8 @@ int main(int argc, char **argv) {
     emitParamsJson(host.params());
     return 0;
   }
+
+  if (serveMode) return serve(host);
 
   if (inPath.empty() || outPath.empty()) {
     std::cerr << "spektra-render: --in and --out are required to render\n";
