@@ -844,6 +844,29 @@ def write_provenance(path: Path, record: dict) -> None:
     path.write_text(json.dumps(record, indent=2) + "\n")
 
 
+def refuse_existing(targets: list[Path], force: bool) -> None:
+    """Nothing already on disk is replaced unless --force says so.
+
+    Every target is checked before the first render, so a batch that would
+    collide stops having written nothing, rather than part of the way through.
+    Two jobs aiming at one file are refused whatever --force says: which of
+    them survives is a matter of timing, and under --jobs not even that.
+    """
+    seen: dict[Path, int] = {}
+    for t in targets:
+        seen[t] = seen.get(t, 0) + 1
+    if collide := [t for t, n in seen.items() if n > 1]:
+        sys.exit("spektra: two outputs would be written to the same file:\n"
+                 + "\n".join(f"  {t}" for t in collide)
+                 + "\n  Give each input its own destination, or a directory.")
+    if force:
+        return
+    if clash := [t for t in seen if t.exists()]:
+        sys.exit("spektra: refusing to overwrite:\n"
+                 + "\n".join(f"  {t}" for t in clash)
+                 + f"\n  Pass --force to replace {'them' if len(clash) > 1 else 'it'}.")
+
+
 # ---------------------------------------------------------------- preset logic
 
 
@@ -1094,6 +1117,8 @@ def main() -> None:
                     help="pin every random seed, making the render reproducible")
     ap.add_argument("--preview", nargs="?", type=int, const=1100, metavar="PX",
                     help="render at the GUI preview size (default 1100 px long edge)")
+    ap.add_argument("-f", "--force", action="store_true",
+                    help="replace output files that already exist")
     ap.add_argument("--jobs", type=int, default=1, help="parallel images")
     ap.add_argument("--info", action="store_true",
                     help="report metadata and decoded statistics, then exit")
@@ -1160,6 +1185,7 @@ def main() -> None:
         if args.dump_session == "-":
             print(text)
         else:
+            refuse_existing([Path(args.dump_session)], args.force)
             Path(args.dump_session).write_text(text + "\n")
             print(f"session -> {args.dump_session}", file=sys.stderr)
         return
@@ -1174,6 +1200,25 @@ def main() -> None:
                 not in RAW_SUFFIXES else ".jpg"))) for s in sources]
     else:
         jobs = [(sources[0], target)]
+
+    if args.save_preset and not args.force:
+        existing = rend.by_name()[P_USER_PRESET]["choices"]
+        if any(norm(c) == norm(args.save_preset) for c in existing):
+            # The plugin stamps the time onto the file name, so saving again
+            # loses nothing -- it leaves two entries with one name, which
+            # --user-preset then cannot tell apart.
+            sys.exit(f"spektra: a saved preset is already called "
+                     f"{args.save_preset!r}.\n"
+                     f"  Saving again adds a second one under the same name "
+                     f"rather than replacing it,\n"
+                     f"  which --user-preset cannot then tell apart. "
+                     f"Pick another name, or pass --force.")
+
+    targets = [d for _, d in jobs]
+    if args.provenance:
+        targets += [Path(f"{d}.spektra.json") if args.provenance == "auto"
+                    else Path(args.provenance) for _, d in jobs]
+    refuse_existing(targets, args.force)
 
     if args.jobs > 1 and len(jobs) > 1:
         with ThreadPoolExecutor(max_workers=args.jobs) as ex:

@@ -1292,6 +1292,53 @@ def test_cli_entry():
     check("the examples mention the companion passes", "--chain" in r.stdout)
 
 
+def test_no_clobber():
+    """Existing files are not replaced without --force."""
+    import subprocess as sp
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        src = d / "in.png"
+        synthetic_photo(src, 64, 48)
+
+        def run(*argv):
+            return sp.run([sys.executable, str(ROOT / "spektra"), *map(str, argv)],
+                          capture_output=True, text=True)
+
+        check("--force is offered", "--force" in run("--help").stdout)
+
+        # A session dump is the one target that needs no plugin to reach.
+        out = d / "s.json"
+        out.write_text("PRECIOUS")
+        r = run(src, "--dump-session", out)
+        check("an existing file is refused",
+              r.returncode == 1 and "refusing to overwrite" in r.stderr,
+              r.stderr.strip().splitlines()[0] if r.stderr else "")
+        check("and is left exactly as it was", out.read_text() == "PRECIOUS")
+        check("the message says how to proceed", "--force" in r.stderr)
+
+        r = run(src, "--dump-session", out, "--force")
+        check("--force replaces it",
+              r.returncode == 0 and out.read_text() != "PRECIOUS")
+
+        missing = d / "fresh.json"
+        check("a path that does not exist is written without complaint",
+              run(src, "--dump-session", missing).returncode == 0
+              and missing.exists())
+
+        # Two jobs aiming at one file is refused whatever --force says, since
+        # which one survives is a matter of timing.
+        a, b = d / "a.png", d / "b.png"
+        synthetic_photo(a, 64, 48)
+        synthetic_photo(b, 64, 48)
+        outdir = d / "batch"
+        r = run(a, b, outdir, "--provenance", d / "one.json", "--force")
+        check("two outputs on one path are refused even with --force",
+              r.returncode == 1 and "same file" in r.stderr,
+              r.stderr.strip().splitlines()[0] if r.stderr else "")
+        check("and nothing was rendered first",
+              not outdir.exists() or not any(outdir.iterdir()))
+
+
 # ------------------------------------------------------------------------ main
 
 
@@ -1336,6 +1383,7 @@ def main():
         ("bias-maths", test_exposure_bias_maths),
         ("binary", test_host_binary),
         ("cli", test_cli_entry),
+        ("no-clobber", test_no_clobber),
     ]
 
     suite = [

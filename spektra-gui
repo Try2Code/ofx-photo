@@ -1450,6 +1450,16 @@ class Window(QMainWindow):
         if not path:
             return
         path = Path(path)
+        # The dialog has already asked about the image.  The sidecar is a
+        # separate file, so it needs its own question -- but only when the
+        # dialog did not ask, which is when the image was not there to replace.
+        sidecar = Path(f"{path}.spektra.json")
+        if (self.chk_prov.isChecked() and sidecar.exists() and not path.exists()
+                and QMessageBox.question(
+                    self, "Replace settings file",
+                    f"{sidecar.name} already exists.\n\nReplace it?",
+                    QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes):
+            return
         if self.full_render is None:
             self.render_full()
         # The crop is applied to the finished render, never before it.
@@ -1468,7 +1478,7 @@ class Window(QMainWindow):
             s["bundle"] = str(self.rend.bundle)
             record = cli.provenance_record(s, self.rend, self.source_path, path,
                                            saved.shape[:2])
-            where = Path(f"{path}.spektra.json")
+            where = sidecar
             cli.write_provenance(where, record)
             note += f"  +  {where.name}"
             if not record["reproducible"]:

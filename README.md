@@ -315,7 +315,32 @@ file claims to be and what it actually decoded to.
 | `--input-colorspace` | override the input transform |
 | `--bit-depth 8\|16`, `--quality N` | output |
 | `--jobs N` | images in parallel |
+| `-f`, `--force` | replace output files that already exist |
 | `--session SPEC`, `--dump-session` | see below |
+
+**Nothing already on disk is replaced without `--force`.** That covers the output image,
+the batch results, the `--provenance` sidecar and `--dump-session`:
+
+```sh
+$ spektra photo.jpg out.jpg
+spektra: refusing to overwrite:
+  out.jpg
+  Pass --force to replace it.
+```
+
+Every destination is checked before the first render, so a batch that would collide stops
+having written nothing rather than part of the way through. Two inputs aimed at one
+destination — `--provenance one.json` over several photographs, say — are refused whatever
+`--force` says, since which one survives is a matter of timing, and under `--jobs` not
+even that.
+
+In the GUI the Save dialog does the asking; it covers the settings file beside the image
+as well.
+
+`--save-preset` is guarded too, differently: the plugin stamps the time onto the file name
+under `~/Documents/spektrafilm/presets/`, so saving a name twice loses nothing but leaves
+two entries that `--user-preset` cannot tell apart. Reusing a name is refused for that
+reason, and `--force` adds the duplicate rather than replacing anything.
 
 Preset names are matched loosely and suggest alternatives when wrong, which helps: the
 real ones are easy to mistype — `Chromium-Noir`, `CineStill 800T`, `Marty - Warm`, `OIL!`.
