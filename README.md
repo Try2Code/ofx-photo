@@ -793,6 +793,23 @@ gate weave, flicker and dust seeds for each new instance, and spektra draws a fr
 every unpinned frame so that a batch does not repeat one grain pattern across it. `--seed N`
 fixes all of them, and then the same input gives the same bytes.
 
+**Some settings rewrite others.** Print Category replaces the Paper list, film Stock
+Category replaces the Stock list, and a preset category moves well over a hundred values at
+once. OFX gives a plugin no way to declare any of that, so the relationships are measured
+once -- set each choice to a different value, see what moved -- and cached against the
+plugin's fingerprint in `~/.cache/ofx-photo/`. The sweep takes about three seconds; the
+answer holds until the plugin binary changes. Delete the file to have it taken again.
+
+The GUI uses it to ask what the new list holds before sending anything, so a Paper that the
+chosen category does not offer is reset rather than refused, and a Paper it does offer is
+kept. On the command line a withdrawn value is still an error, which is what you want from
+a script:
+
+```sh
+$ spektra photo.jpg out.jpg --set printCategory=Eastman --set "paper=Kodak Ektacolor Edge"
+spektra: 'Kodak Ektacolor Edge' is not one of the 3 options for paper
+```
+
 **Choosing a preset for an effect switches that effect on.** The plugin keeps the preset
 and the enable as separate parameters, so picking a vignette preset while vignette is off
 does nothing at all. The GUI arms it for you and says so.

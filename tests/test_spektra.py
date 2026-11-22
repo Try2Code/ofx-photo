@@ -1373,6 +1373,85 @@ def test_exiftool_session():
         et.close()
 
 
+def test_dependent_dropdowns(h: Harness):
+    """Changing a category must not leave an option the plugin has withdrawn.
+
+    Print Category "Eastman" offers three papers, none of them the Kodak sheet
+    that "Still Film" leaves selected.  The panel used to send it anyway; the
+    plugin refused the whole describe, and because that happens inside a Qt
+    signal handler the SystemExit ended the application -- taking the user's
+    session with it on at least one desktop.
+    """
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PyQt5.QtWidgets import QApplication
+    except ImportError:
+        results.append(("skip", "dependent dropdowns", "PyQt5 not installed"))
+        print("  skip dependent dropdowns   (PyQt5 not installed)")
+        return
+    gspec = importlib.util.spec_from_loader(
+        "gui", importlib.machinery.SourceFileLoader("gui", str(ROOT / "spektra-gui")))
+    gui = importlib.util.module_from_spec(gspec)
+    gspec.loader.exec_module(gui)
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
+
+    inv = cli.dependencies(h.rend)
+    check("the inventory names which choices rewrite which lists",
+          bool(inv["rewrites_options"]), str(inv["rewrites_options"]))
+    check("it is kept against the plugin it was measured from",
+          inv["fingerprint"] == cli.plugin_fingerprint(h.rend))
+
+    base = h.rend.by_name()
+    combos = problems = 0
+    for driver, deps in inv["rewrites_options"].items():
+        if driver not in base:
+            continue
+        for value in base[driver]["choices"]:
+            w = gui.Window(h.rend)
+            if driver not in w.widgets:
+                continue
+            # Pin each dependent to something the new category may not offer.
+            for dep in deps:
+                if dep in w.widgets:
+                    wid = w.widgets[dep][1]
+                    wid.setCurrentIndex(wid.count() - 1)
+                    w.dirty.add(dep)
+            w.widgets[driver][1].setCurrentText(value)
+            w.dirty.add(driver)
+            combos += 1
+            try:
+                w.refresh_choices()
+            except SystemExit as e:
+                problems += 1
+                print(f"       {driver}={value}: {e}")
+                continue
+            for dep in deps:
+                if dep in w.widgets:
+                    wid = w.widgets[dep][1]
+                    if wid.currentText() not in [wid.itemText(i)
+                                                 for i in range(wid.count())]:
+                        problems += 1
+    check(f"every category leaves its dependent dropdowns valid",
+          problems == 0 and combos > 0, f"{combos} combinations, {problems} bad")
+
+    # A selection that survives the change must be kept, not reset.
+    w = gui.Window(h.rend)
+    if "printCategory" in w.widgets and "paper" in w.widgets:
+        paper = w.widgets["paper"][1]
+        kodak = [paper.itemText(i) for i in range(paper.count())
+                 if paper.itemText(i).startswith("Kodak")]
+        if kodak:
+            paper.setCurrentText(kodak[0])
+            w.dirty.add("paper")
+            w.widgets["printCategory"][1].setCurrentText("Kodak")
+            w.dirty.add("printCategory")
+            w.refresh_choices()
+            check("a choice the new category still offers is kept",
+                  paper.currentText() == kodak[0], paper.currentText())
+
+
 def test_full_render_is_not_stale(h: Harness):
     """Saving after a change must not write the render from before it.
 
@@ -1549,6 +1628,7 @@ def main():
         ("buttons", lambda: test_push_buttons(h)),
         ("server", lambda: test_render_server(h)),
         ("stale-full", lambda: test_full_render_is_not_stale(h)),
+        ("dependents", lambda: test_dependent_dropdowns(h)),
     ]
 
     for name, fn in offline + (suite if h else []):

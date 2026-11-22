@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import copy
+import datetime
 import functools
 import difflib
 import json
@@ -843,6 +844,89 @@ class Renderer:
                 return sfraw_read(dst)
         finally:
             self._return(srv)
+
+
+# ------------------------------------------------------- dependency inventory
+#
+# Many of the plugin's settings rewrite others.  Picking a Print Category
+# replaces the Paper list; picking a film Stock Category replaces the Stock
+# list; a preset category moves a hundred values at once.  A panel that does
+# not know this sends a Paper the new category has never heard of, and the
+# plugin refuses the whole request.
+#
+# The relationships are not published anywhere, so they are measured once --
+# set each choice to a different value and see what moved -- and kept beside
+# the plugin they were measured from.  The sweep costs a few seconds; the
+# answer is good until the plugin itself changes.
+
+
+def plugin_fingerprint(rend: "Renderer") -> str:
+    """Identifies the plugin binary this inventory was taken from."""
+    ident = subprocess.run([str(rend.renderer), "--bundle", str(rend.bundle),
+                            "--list-plugins"], capture_output=True, text=True).stdout
+    binaries = sorted(Path(rend.bundle).rglob("*.ofx"))
+    stamp = "".join(f"{b.name}:{b.stat().st_size}:{int(b.stat().st_mtime)};"
+                    for b in binaries)
+    import hashlib
+    return hashlib.sha256((ident + stamp).encode()).hexdigest()[:16]
+
+
+def inventory_path(rend: "Renderer") -> Path:
+    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    return cache / "ofx-photo" / f"dependencies-{plugin_fingerprint(rend)}.json"
+
+
+def measure_dependencies(rend: "Renderer") -> dict:
+    """Which choices rewrite other parameters' option lists and values."""
+    base = rend.by_name()
+    choices = {n: p for n, p in base.items()
+               if p.get("choices") and len(p["choices"]) > 1}
+    skip = set(SEED_PARAMS)   # re-randomised on any change; not a relationship
+    options: dict[str, list[str]] = {}
+    values: dict[str, list[str]] = {}
+    for n, p in choices.items():
+        other = next((i for i in range(len(p["choices"])) if i != p["value"]), None)
+        if other is None:
+            continue
+        try:
+            state = rend.by_name([(n, str(other))])
+        except SystemExit:
+            continue      # a value this one cannot take right now; no matter
+        moved_lists = [m for m in choices if m != n
+                       and state.get(m, {}).get("choices") != choices[m]["choices"]]
+        moved_values = [m for m in base
+                        if m != n and m not in skip and m in state
+                        and base[m]["type"] not in ("OfxParamTypeGroup",
+                                                    "OfxParamTypePushButton")
+                        and state[m].get("value") != base[m].get("value")]
+        if moved_lists:
+            options[n] = sorted(moved_lists)
+        if moved_values:
+            values[n] = sorted(moved_values)
+    return {"fingerprint": plugin_fingerprint(rend),
+            "bundle": str(rend.bundle),
+            "measured": datetime.datetime.now().isoformat(timespec="seconds"),
+            "rewrites_options": options,
+            "rewrites_values": values}
+
+
+def dependencies(rend: "Renderer", rebuild: bool = False) -> dict:
+    """The inventory, from the cache beside the plugin or freshly measured."""
+    path = inventory_path(rend)
+    if not rebuild:
+        try:
+            cached = json.loads(path.read_text())
+            if cached.get("fingerprint") == plugin_fingerprint(rend):
+                return cached
+        except (OSError, ValueError):
+            pass
+    found = measure_dependencies(rend)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(found, indent=2) + "\n")
+    except OSError:
+        pass
+    return found
 
 
 # -------------------------------------------------------------------- session

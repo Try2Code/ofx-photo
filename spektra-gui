@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -533,6 +534,7 @@ class Window(QMainWindow):
         self.meta: dict = {}
         self.rendered: np.ndarray | None = None   # linear, preview sized
         self.full_render: np.ndarray | None = None
+        self._dependent: set | None = None
         self.job: RenderJob | None = None
         self.pending = False
         self.showing_original = False
@@ -1156,6 +1158,16 @@ class Window(QMainWindow):
             self.refresh_choices()
         self.on_change()
 
+    def dependent_choices(self) -> set:
+        """Dropdowns whose option list another setting rewrites."""
+        if self._dependent is None:
+            try:
+                inv = cli.dependencies(self.rend)["rewrites_options"]
+                self._dependent = {n for deps in inv.values() for n in deps}
+            except Exception:  # noqa: BLE001 - never block the panel on this
+                self._dependent = set()
+        return self._dependent
+
     @staticmethod
     def _set_choices(w, options, index):
         """Replace a dropdown's options, keeping the selection where we can.
@@ -1183,7 +1195,38 @@ class Window(QMainWindow):
         """
         if not self.widgets:
             return
-        state = self.rend.by_name(self.current_sets())
+        # Some choices rewrite other choices' option lists -- Print Category
+        # replaces Paper, film Stock Category replaces Stock -- and the plugin
+        # refuses a whole request that names an option the new list does not
+        # hold.  Which parameter rewrites which is not something OFX lets a
+        # plugin declare, so it is measured once and cached; see
+        # spektra.dependencies.  Ask with the categories applied and the
+        # dependent selections withheld, so the valid lists are known before
+        # anything is committed.
+        dependent = self.dependent_choices()
+        sets = self.current_sets()
+        withheld = [kv for kv in sets if kv[0] in dependent and kv[0] in self.dirty]
+        probe = [kv for kv in sets if kv not in withheld]
+        dropped = []
+        try:
+            state = self.rend.by_name(probe)
+            for name, value in withheld:
+                options = state.get(name, {}).get("choices")
+                if options is not None and value not in options:
+                    self.dirty.discard(name)
+                    dropped.append(name)
+            kept = [kv for kv in withheld if kv[0] not in dropped]
+            if kept:
+                state = self.rend.by_name(probe + kept)
+        except SystemExit as e:
+            # Nothing above should leave an impossible request, but a stale
+            # inventory or a relationship it did not catch would, and this
+            # runs in a signal handler where an exit would end the program.
+            self.statusBar().showMessage(str(e)[:200], 8000)
+            return
+        if dropped:
+            self.statusBar().showMessage(
+                f"{', '.join(dropped)} reset: not offered with this category", 6000)
         self.syncing = True
         try:
             for name, (kind, w) in self.widgets.items():
