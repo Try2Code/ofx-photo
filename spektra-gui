@@ -1379,6 +1379,12 @@ class Window(QMainWindow):
         self.on_change()
 
     def on_change(self):
+        # The full-resolution render is kept so that saving and 1:1 need not
+        # redo it, but it belongs to the settings it was made with.  Anything
+        # that reaches here has changed those, so it goes -- otherwise a save
+        # after a change wrote the render from before it, and only pressing
+        # 1:1 first (which rebuilds it) gave the right file.
+        self.full_render = None
         if self.preview_linear is None:
             return
         if self.job and self.job.isRunning():

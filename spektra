@@ -10,6 +10,7 @@ import functools
 import difflib
 import json
 import os
+import queue
 import random
 import shutil
 import struct
@@ -452,10 +453,10 @@ _helpers_lock = threading.Lock()
 def _die_with_parent() -> None:
     """Ask the kernel to signal this child when its parent goes.
 
-    The registry below covers every ordinary exit, but nothing in the process
-    can run after SIGKILL, and exiftool -stay_open waits for a command for
-    ever: closing its stdin does not end it, unlike the render host.  This is
-    the only thing that still cleans up when spektra is killed outright.
+    The registry covers every ordinary exit, but nothing in the process can
+    run after SIGKILL, and exiftool -stay_open waits for a command for ever:
+    closing its stdin does not end it, unlike the render host.  This is the
+    only thing that still cleans up when spektra is killed outright.
     """
     try:
         import ctypes, signal
@@ -464,8 +465,36 @@ def _die_with_parent() -> None:
         pass
 
 
+# PR_SET_PDEATHSIG watches the thread that forked the child, not the process,
+# so a helper started from a short-lived thread is killed when that thread
+# ends.  The GUI renders each preview in a new QThread, which killed the host
+# it had just started and made the pool spawn a fresh one every time.  One
+# thread does all the spawning instead, and it lasts as long as the program.
+_spawn_requests: "queue.Queue" = queue.Queue()
+_spawner: threading.Thread | None = None
+
+
+def _spawn_loop() -> None:
+    while True:
+        cmd, kw, reply = _spawn_requests.get()
+        try:
+            reply.put(subprocess.Popen(cmd, preexec_fn=_die_with_parent, **kw))
+        except BaseException as e:  # noqa: BLE001 - handed to the caller
+            reply.put(e)
+
+
 def _spawn_helper(cmd: list[str], **kw) -> subprocess.Popen:
-    proc = subprocess.Popen(cmd, preexec_fn=_die_with_parent, **kw)
+    global _spawner
+    with _helpers_lock:
+        if _spawner is None:
+            _spawner = threading.Thread(target=_spawn_loop, name="spektra-spawner",
+                                        daemon=True)
+            _spawner.start()
+    reply: "queue.Queue" = queue.Queue(1)
+    _spawn_requests.put((cmd, kw, reply))
+    proc = reply.get()
+    if isinstance(proc, BaseException):
+        raise proc
     with _helpers_lock:
         _helpers.append(proc)
     return proc
@@ -670,12 +699,21 @@ def param_value_string(p: dict) -> str | None:
 # ------------------------------------------------------------ the render call
 
 
+class _Server:
+    """A live spektra-render, with the parameters last set on its instance."""
+
+    def __init__(self, proc: subprocess.Popen):
+        self.proc = proc
+        self.applied: dict[str, str] = {}
+
+
 class Renderer:
     def __init__(self, renderer: Path, bundle: Path):
         self.renderer, self.bundle = renderer, bundle
         self._params: list[dict] | None = None
         self._default_strings: dict[str, str] | None = None
-        self._local = threading.local()
+        self._idle: list[_Server] = []
+        self._pool_lock = threading.Lock()
 
     def describe(self, sets: list[tuple[str, str]] | None = None) -> list[dict]:
         cmd = [str(self.renderer), "--bundle", str(self.bundle), "--list-params"]
@@ -717,26 +755,33 @@ class Renderer:
     #
     # The plugin builds its pipeline on the first render of an instance: a
     # quarter of a second, against about fifteen milliseconds for each render
-    # after it.  Spawning the host per image paid that every time, so the host
-    # is kept alive instead and spoken to over a pipe.  Destroying the
+    # after it.  Spawning the host per image paid that every time, so hosts
+    # are kept alive instead and spoken to over a pipe.  Destroying the
     # instance would throw the pipeline away again, so one instance serves
-    # every render and parameters accumulate on it -- which is why anything
-    # set for an earlier render and left out of this one is put back to its
-    # default here.
+    # every render it is given and parameters accumulate on it -- which is why
+    # anything set for an earlier render and left out of this one is put back
+    # to its default here.
     #
-    # One server per thread, since a server renders one frame at a time and
-    # --jobs wants several at once.
+    # They are pooled rather than held per thread.  A server renders one frame
+    # at a time, so --jobs needs several; but the GUI runs each preview in a
+    # fresh QThread, and keying them by thread gave every preview a new host
+    # that paid the full startup again -- exactly what this was meant to
+    # avoid, with the old ones left running besides.
 
-    def _server(self):
-        local = self._local
-        proc = getattr(local, "proc", None)
-        if proc is not None and proc.poll() is None:
-            return proc
-        proc = _spawn_helper(
+    def _checkout(self) -> "_Server":
+        with self._pool_lock:
+            while self._idle:
+                srv = self._idle.pop()
+                if srv.proc.poll() is None:
+                    return srv
+        return _Server(_spawn_helper(
             [str(self.renderer), "--bundle", str(self.bundle), "--serve"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
-        local.proc, local.applied = proc, {}
-        return proc
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1))
+
+    def _return(self, srv: "_Server") -> None:
+        if srv.proc.poll() is None:
+            with self._pool_lock:
+                self._idle.append(srv)
 
     def _defaults(self) -> dict[str, str]:
         """What every parameter reads as before anything has been set."""
@@ -747,21 +792,21 @@ class Renderer:
         return self._default_strings
 
     def close(self) -> None:
-        proc = getattr(self._local, "proc", None)
-        if proc is not None and proc.poll() is None:
-            try:
-                proc.stdin.write("quit\n")
-                proc.stdin.flush()
-                proc.wait(timeout=5)
-            except (OSError, subprocess.TimeoutExpired):
-                proc.kill()
-        self._local.proc = None
+        with self._pool_lock:
+            idle, self._idle = list(self._idle), []
+        for srv in idle:
+            if srv.proc.poll() is None:
+                try:
+                    srv.proc.stdin.write("quit\n")
+                    srv.proc.stdin.flush()
+                    srv.proc.wait(timeout=5)
+                except (OSError, ValueError, subprocess.TimeoutExpired):
+                    srv.proc.kill()
 
     def render(self, linear_rgb: np.ndarray, sets: list[tuple[str, str]]) -> np.ndarray:
         h, w = linear_rgb.shape[:2]
         rgba = np.ones((h, w, 4), np.float32)
         rgba[..., :3] = linear_rgb[..., :3]
-        proc = self._server()
         # The plugin draws its own seeds when the instance is created, so a
         # process per render used to give every frame its own grain.  One
         # instance serving a whole batch would instead stamp the same grain,
@@ -771,31 +816,33 @@ class Renderer:
         if not any(n in dict(sets) for n in SEED_PARAMS):
             sets = seed_sets(random.randrange(1 << 30)) + list(sets)
         wanted = dict(sets)
-        # Put back whatever the last render on this server set and this one
-        # does not, so a reused instance answers exactly as a fresh one would.
-        stale = [(n, self._defaults()[n])
-                 for n in self._local.applied
-                 if n not in wanted and n in self._defaults()]
-        with tempfile.TemporaryDirectory() as td:
-            src, dst = Path(td) / "in.sfraw", Path(td) / "out.sfraw"
-            sfraw_write(src, rgba)
-            try:
-                proc.stdin.write(f"render\n{src}\n{dst}\n")
-                for k, v in stale + list(sets):
-                    proc.stdin.write(f"{k}={v}\n")
-                proc.stdin.write("\n")
-                proc.stdin.flush()
-                reply = proc.stdout.readline()
-            except OSError:
-                reply = ""
-            if not reply:
-                self._local.proc = None
-                sys.exit("spektra: the render host stopped responding")
-            if not reply.startswith("ok "):
-                self._local.applied = wanted
-                sys.exit(f"spektra: {reply[4:].strip() if reply.startswith('err ') else reply.strip()}")
-            self._local.applied = wanted
-            return sfraw_read(dst)
+        srv = self._checkout()
+        try:
+            # Put back whatever the last render on this server set and this
+            # one does not, so a reused instance answers as a fresh one would.
+            stale = [(n, self._defaults()[n]) for n in srv.applied
+                     if n not in wanted and n in self._defaults()]
+            with tempfile.TemporaryDirectory() as td:
+                src, dst = Path(td) / "in.sfraw", Path(td) / "out.sfraw"
+                sfraw_write(src, rgba)
+                try:
+                    srv.proc.stdin.write(f"render\n{src}\n{dst}\n")
+                    for k, v in stale + list(sets):
+                        srv.proc.stdin.write(f"{k}={v}\n")
+                    srv.proc.stdin.write("\n")
+                    srv.proc.stdin.flush()
+                    reply = srv.proc.stdout.readline()
+                except OSError:
+                    reply = ""
+                srv.applied = wanted
+                if not reply:
+                    sys.exit("spektra: the render host stopped responding")
+                if not reply.startswith("ok "):
+                    sys.exit("spektra: " + (reply[4:] if reply.startswith("err ")
+                                            else reply).strip())
+                return sfraw_read(dst)
+        finally:
+            self._return(srv)
 
 
 # -------------------------------------------------------------------- session

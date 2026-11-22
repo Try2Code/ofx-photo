@@ -756,11 +756,19 @@ plugin enters this repository.
 The host is **kept alive and spoken to over a pipe** (`spektra-render --serve`). The plugin
 builds its pipeline on the first render of an instance -- about 250 ms, against 15 ms for
 every render after it -- and destroying the instance throws that work away, so one instance
-serves the whole run. One host per thread, since a host renders one frame at a time and
+serves the whole run. Hosts are pooled, since one renders a single frame at a time and
 `--jobs` wants several at once. A batch of 32 photographs runs 2.2x faster serially and
-3.2x at `--jobs 4` than it did with a process per render.
+3.2x at `--jobs 4` than it did with a process per render, and a GUI preview costs about
+100 ms rather than 300.
 
-Because the instance persists, parameters accumulate on it. The Python side therefore puts
+They are pooled rather than held per thread for a reason worth recording: the GUI renders
+each preview in a new `QThread`, and `PR_SET_PDEATHSIG` below watches the thread that
+forked a child, not the process. Keyed by thread, every preview got a host of its own and
+the kernel killed it as soon as that thread ended -- so the GUI paid the full startup every
+time and gained nothing at all. All spawning now happens on one thread that lasts as long
+as the program.
+
+Because an instance persists, parameters accumulate on it. The Python side therefore puts
 back anything it set for an earlier render and leaves out of this one, so a reused host
 answers exactly as a fresh one did -- verified byte for byte. For the same reason an
 unpinned render is given a fresh seed per frame: the plugin draws its seeds when the

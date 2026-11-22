@@ -1373,6 +1373,59 @@ def test_exiftool_session():
         et.close()
 
 
+def test_full_render_is_not_stale(h: Harness):
+    """Saving after a change must not write the render from before it.
+
+    The full-resolution render is cached so that saving and 1:1 need not redo
+    it, and it used to survive a settings change: the first save rendered and
+    cached, a Paper control was moved, and the second save handed back the
+    first render.  Pressing 1:1 in between hid it, because that rebuilt the
+    cache.
+    """
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PyQt5.QtWidgets import QApplication
+    except ImportError:
+        results.append(("skip", "stale full render", "PyQt5 not installed"))
+        print("  skip stale full render   (PyQt5 not installed)")
+        return
+
+    gspec = importlib.util.spec_from_loader(
+        "gui", importlib.machinery.SourceFileLoader("gui", str(ROOT / "spektra-gui")))
+    gui = importlib.util.module_from_spec(gspec)
+    gspec.loader.exec_module(gui)
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
+
+    w = gui.Window(h.rend)
+    w.load_path(h.photo)
+    check("a photo loaded", w.full_linear is not None)
+
+    # What a save does: render at full size and keep it.
+    w.render_full()
+    first = w.full_render
+    check("the first save has something to write", first is not None)
+
+    # Move a control, the way the Paper tab does.  A name with a widget would
+    # take its value from that widget, so set the widget when there is one.
+    w.extra_params["printShadowShape"] = 2.0   # no widget: wins outright
+    w.dirty.discard("printShadowShape")
+    before = w.session(for_preview=False)["params"].get("printShadowShape")
+    check("the change reaches the session", str(before) == "2.0", repr(before))
+    w.on_change()
+    check("changing a setting drops the cached full render",
+          w.full_render is None)
+
+    # What the second save does.
+    w.render_full()
+    second = w.full_render
+    check("the second save renders afresh", second is not None)
+    check("and gets a different image than the first",
+          not np.array_equal(first, second),
+          "max diff %.6f" % float(np.abs(first - second).max()))
+
+
 def test_no_clobber():
     """Existing files are not replaced without --force."""
     import subprocess as sp
@@ -1495,6 +1548,7 @@ def main():
         ("zoom", lambda: test_zoom_and_pan(h)),
         ("buttons", lambda: test_push_buttons(h)),
         ("server", lambda: test_render_server(h)),
+        ("stale-full", lambda: test_full_render_is_not_stale(h)),
     ]
 
     for name, fn in offline + (suite if h else []):
